@@ -1,0 +1,4 @@
+boto3
+dataclasses-json
+pytest
+requests

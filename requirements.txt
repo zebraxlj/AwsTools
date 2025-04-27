@@ -1,3 +1,4 @@
+amazon.ion
 boto3
 dataclasses-json
 pytest

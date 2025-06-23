@@ -5,7 +5,7 @@ import string
 import sys
 from dataclasses import dataclass, fields
 from datetime import datetime
-from typing import List, ClassVar, Dict
+from typing import ClassVar, Dict, List, Optional
 
 import boto3
 import boto3.session
@@ -17,21 +17,23 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 os.chdir('..')
 sys.path.append(os.getcwd())
 
-from utils.aws_client_error_handler import handle_expired_token_exception
-from utils.aws_client_helper import get_aws_profile
-from utils.aws_consts import AllEnvs, Env
-from utils.SystemTools.file_system_helper import create_dir_if_not_exists
-from utils.TablePrinter.table_printer import BaseTable, BaseRow, ColumnConfig, ColumnAlignment, CondFmtExactMatch
+from utils.aws_client_error_handler import handle_expired_token_exception  # noqa: E402
+from utils.aws_client_helper import get_aws_profile  # noqa: E402
+from utils.aws_consts import AllEnvs, Env  # noqa: E402
+from utils.SystemTools.file_system_helper import create_dir_if_not_exists  # noqa: E402
+from utils.TablePrinter.table_printer import (    # noqa: E402
+    BaseTable, BaseRow, ColumnConfig, ColumnAlignment, CondFmtExactMatch
+)
 
 # region 配置项
 ENV, SUB_ENV = AllEnvs.NemoDevMaprefine, '76700'
 # ENV, SUB_ENV = AllEnvs.NemoDevTrunk, '47607'
 # ENV, SUB_ENV = AllEnvs.PartyAnimals, ''
 REGIONS = [
-    # 'cn-northwest-1',
-    # 'ap-northeast-1',
+    'cn-northwest-1',
+    'ap-northeast-1',
     'eu-central-1',
-    # 'us-east-1',
+    'us-east-1',
 ]
 # endregion 配置项
 
@@ -46,21 +48,21 @@ class Function:
     """
     FunctionName: str
     FunctionArn: str
-    Runtime: str = None
-    Role: str = None
-    Handler: str = None
-    CodeSize: int = None
-    Description: str = None
-    Timeout: int = None
-    MemorySize: int = None
-    LastModified: str = None
-    CodeSha256: str = None
-    Version: str = None
-    Environment: dict = None
-    Layers: dict = None
-    PackageType: str = None
-    Architectures: list = None
-    EphemeralStorage: dict = None
+    Runtime: Optional[str] = None
+    Role: Optional[str] = None
+    Handler: Optional[str] = None
+    CodeSize: Optional[int] = None
+    Description: Optional[str] = None
+    Timeout: Optional[int] = None
+    MemorySize: Optional[int] = None
+    LastModified: Optional[str] = None
+    CodeSha256: Optional[str] = None
+    Version: Optional[str] = None
+    Environment: Optional[dict] = None
+    Layers: Optional[dict] = None
+    PackageType: Optional[str] = None
+    Architectures: Optional[list] = None
+    EphemeralStorage: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, dict_data: dict):
@@ -76,9 +78,9 @@ class FunctionRow(BaseRow):
     FunctionName_href: str = 'NA'
     Region: str = 'NA'
     __Region_config: ClassVar[ColumnConfig] = ColumnConfig(alias='地区')
-    Timeout: int = None
+    Timeout: Optional[int] = None
     __Timeout_config: ClassVar[ColumnConfig] = ColumnConfig(alias='超时')
-    MemorySize: int = None
+    MemorySize: Optional[int] = None
     __MemorySize_config: ClassVar[ColumnConfig] = ColumnConfig(alias='内存')
     CurrencySetting: str = 'NA'
     __CurrencySetting_config: ClassVar[ColumnConfig] = ColumnConfig(
@@ -107,6 +109,7 @@ def get_env_rgn_functions(env: Env, region: str) -> List[dict]:
         except ClientError as e:
             if 'ExpiredTokenException' in e.response['Error']['Code']:
                 handle_expired_token_exception(session)
+                sys.exit(0)
             else:
                 print(f'Exception: {e.__dict__}')
             break
@@ -180,6 +183,8 @@ def save_dict_of_dict_to_json(file_name: str, dict_of_dict: Dict[str, dict]):
 
 
 def save_list_of_dict_to_json(file_name: str, list_of_dict: List[dict]):
+    if not list_of_dict:
+        return
     file_path = __get_json_path(file_name)
     create_dir_if_not_exists(file_path=file_path)
     print(f'Save File: {file_path}')
@@ -275,14 +280,14 @@ def main():
         else:
             ccy_setting = '非预留账户并发'
         reserved_ccy = fn_ccy_all.get(fn.FunctionName, {}).get('ReservedConcurrentExecutions', -1)
-        last_modified_dt = datetime.strptime(fn.LastModified, '%Y-%m-%dT%H:%M:%S.%f%z')
+        last_modified_dt = datetime.strptime(fn.LastModified, '%Y-%m-%dT%H:%M:%S.%f%z') if fn.LastModified else None
         table.insert_row(FunctionRow(
             FunctionName=fn.FunctionName,
             Region=fn_rgn,
             Timeout=fn.Timeout,
             MemorySize=fn.MemorySize,
             CurrencySetting=ccy_setting,
-            LastDeployDt=datetime.strftime(last_modified_dt, '%Y-%m-%d %H:%M %z')[:-2],
+            LastDeployDt=datetime.strftime(last_modified_dt, '%Y-%m-%d %H:%M %z')[:-2] if last_modified_dt else 'NA',
             FunctionName_href=get_lambda_url(fn_rgn, fn.FunctionName),
         ))
     table.print_table(order_by=['FunctionName', 'Region'])

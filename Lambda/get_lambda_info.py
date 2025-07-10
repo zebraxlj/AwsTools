@@ -3,9 +3,8 @@ import multiprocessing
 import os
 import string
 import sys
-from dataclasses import dataclass, fields
 from datetime import datetime
-from typing import ClassVar, Dict, List, Optional
+from typing import Dict, List
 
 import boto3
 import boto3.session
@@ -17,13 +16,12 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 os.chdir('..')
 sys.path.append(os.getcwd())
 
+from Lambda.lambda_info_types import Function, FunctionRow, FunctionTable  # noqa: E402
 from utils.aws_client_error_handler import handle_expired_token_exception  # noqa: E402
 from utils.aws_client_helper import get_aws_profile  # noqa: E402
 from utils.aws_consts import AllEnvs, Env  # noqa: E402
+from utils.aws_urls import get_lambda_function_url  # noqa: E402
 from utils.SystemTools.file_system_helper import create_dir_if_not_exists  # noqa: E402
-from utils.TablePrinter.table_printer import (    # noqa: E402
-    BaseTable, BaseRow, ColumnConfig, ColumnAlignment, CondFmtExactMatch
-)
 
 # region 配置项
 ENV, SUB_ENV = AllEnvs.NemoDevMaprefine, '76700'
@@ -39,70 +37,6 @@ REGIONS = [
 
 DT_FMT = '%Y-%m-%d %H:%M:%S'
 OUTPUT_DIR = f'./{CURR_FOLDER_NAME}/Data/output'
-
-
-@dataclass
-class Function:
-    """
-    用于解析 list_functions 返回的 Functions 字段，返回结构见文档：
-    https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/lambda/client/list_functions.html
-    """
-    FunctionName: str
-    FunctionArn: str
-    Runtime: Optional[str] = None
-    Role: Optional[str] = None
-    Handler: Optional[str] = None
-    CodeSize: Optional[int] = None
-    Description: Optional[str] = None
-    Timeout: Optional[int] = None
-    MemorySize: Optional[int] = None
-    LastModified: Optional[str] = None
-    CodeSha256: Optional[str] = None
-    Version: Optional[str] = None
-    Environment: Optional[dict] = None
-    Layers: Optional[dict] = None
-    PackageType: Optional[str] = None
-    Architectures: Optional[list] = None
-    EphemeralStorage: Optional[dict] = None
-
-    @classmethod
-    def from_dict(cls, dict_data: dict):
-        valid_fields = {f.name for f in fields(cls)}
-        filtered_data = {k: v for k, v in dict_data.items() if k in valid_fields}
-        return cls(**filtered_data)
-
-    def get_region(self) -> str:
-        """
-        从 FunctionArn 中提取地区信息
-        :return: 地区字符串
-        """
-        if not self.FunctionArn:
-            return 'NA'
-        return self.FunctionArn.split(':lambda:')[1].split(':')[0]
-
-
-@dataclass
-class FunctionRow(BaseRow):
-    FunctionName: str = 'NA'
-    __FunctionName_config: ClassVar[ColumnConfig] = ColumnConfig(align=ColumnAlignment.LEFT)
-    FunctionName_href: str = 'NA'
-    Region: str = 'NA'
-    __Region_config: ClassVar[ColumnConfig] = ColumnConfig(alias='地区')
-    Timeout: Optional[int] = None
-    __Timeout_config: ClassVar[ColumnConfig] = ColumnConfig(alias='超时')
-    MemorySize: Optional[int] = None
-    __MemorySize_config: ClassVar[ColumnConfig] = ColumnConfig(alias='内存')
-    CurrencySetting: str = 'NA'
-    __CurrencySetting_config: ClassVar[ColumnConfig] = ColumnConfig(
-        alias='并发设置', conditional_format=CondFmtExactMatch(match_target='Throttled')
-    )
-    __Throttled_config: ClassVar[ColumnConfig] = ColumnConfig(conditional_format=CondFmtExactMatch(match_target=True))
-    LastDeployDt: str = 'NA'
-    __LastDeployDt_config: ClassVar[ColumnConfig] = ColumnConfig(alias='最后部署时间')
-
-
-class FunctionTable(BaseTable):
-    row_type = FunctionRow
 
 
 def get_env_rgn_functions(env: Env, region: str) -> List[dict]:
@@ -197,7 +131,7 @@ def get_env_rgn_functions_worker(
         )
 
 
-def get_functions_currency(env: Env, region: str, function_names: List[str]) -> Dict[str, dict]:
+def get_functions_concurrency(env: Env, region: str, function_names: List[str]) -> Dict[str, dict]:
     session = boto3.Session(region_name=region, profile_name=get_aws_profile(region, env.is_prod_aws))
     client = session.client('lambda', config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}))
 
@@ -208,7 +142,7 @@ def get_functions_currency(env: Env, region: str, function_names: List[str]) -> 
     return ret
 
 
-def get_function_currency_worker(
+def get_function_concurrency_worker(
         env: Env, region: str, function_name: str, shared_dict: dict, stop_event, verbose: bool = False
 ):
     if verbose:
@@ -285,17 +219,6 @@ def parse_list_functions_resp(functions: List[dict]) -> List[Function]:
     return fn_all
 
 
-def get_lambda_url(region: str, function_name):
-    region = region
-    if 'cn' in region:
-        # https://cn-northwest-1.console.amazonaws.cn/lambda/home?region=cn-northwest-1#/functions/PartyAnimals-FeishuNotifier
-        fn_url = f'https://{region}.console.amazonaws.cn/lambda/home?region={region}#/functions/{function_name}'
-    else:
-        # https://us-east-1.console.aws.amazon.com/lambda/home?region=us-east-1#/functions/PartyAnimals-EventTrackingFunction
-        fn_url = f'https://{region}.console.aws.amazon.com/lambda/home?region={region}#/functions/{function_name}'
-    return fn_url
-
-
 def main_parallel():
     fn_ccy_all: Dict = {}
     table = FunctionTable()
@@ -353,7 +276,7 @@ def main_parallel():
         for func in fn_curr_env_rgn:
             rgn, fn_name = func.get_region(), func.FunctionName
             process = multiprocessing.Process(
-                target=get_function_currency_worker, args=(ENV, rgn, fn_name, shared_dict_fn_ccy, stop_event)
+                target=get_function_concurrency_worker, args=(ENV, rgn, fn_name, shared_dict_fn_ccy, stop_event)
             )
             processes_func_ccy.append(process)
             process.start()
@@ -384,9 +307,9 @@ def main_parallel():
             Region=fn_rgn,
             Timeout=fn.Timeout,
             MemorySize=fn.MemorySize,
-            CurrencySetting=ccy_setting,
+            ConcurrencySetting=ccy_setting,
             LastDeployDt=datetime.strftime(last_modified_dt, '%Y-%m-%d %H:%M %z')[:-2] if last_modified_dt else 'NA',
-            FunctionName_href=get_lambda_url(fn_rgn, fn.FunctionName),
+            FunctionName_href=get_lambda_function_url(fn_rgn, fn.FunctionName),
         ))
     table.print_table(order_by=['FunctionName', 'Region'])
 
@@ -435,7 +358,7 @@ def main():
         processes_func_ccy = []
         for fn in fn_curr_env_rgn:
             process = multiprocessing.Process(
-                target=get_function_currency_worker, args=(ENV, rgn, fn.FunctionName, shared_dict, stop_event)
+                target=get_function_concurrency_worker, args=(ENV, rgn, fn.FunctionName, shared_dict, stop_event)
             )
             processes_func_ccy.append(process)
             process.start()
@@ -466,9 +389,9 @@ def main():
             Region=fn_rgn,
             Timeout=fn.Timeout,
             MemorySize=fn.MemorySize,
-            CurrencySetting=ccy_setting,
+            ConcurrencySetting=ccy_setting,
             LastDeployDt=datetime.strftime(last_modified_dt, '%Y-%m-%d %H:%M %z')[:-2] if last_modified_dt else 'NA',
-            FunctionName_href=get_lambda_url(fn_rgn, fn.FunctionName),
+            FunctionName_href=get_lambda_function_url(fn_rgn, fn.FunctionName),
         ))
     table.print_table(order_by=['FunctionName', 'Region'])
 

@@ -37,6 +37,7 @@ REGIONS = [
 ]
 # endregion 配置项
 
+DT_FMT = '%Y-%m-%d %H:%M:%S'
 OUTPUT_DIR = f'./{CURR_FOLDER_NAME}/Data/output'
 
 
@@ -69,6 +70,15 @@ class Function:
         valid_fields = {f.name for f in fields(cls)}
         filtered_data = {k: v for k, v in dict_data.items() if k in valid_fields}
         return cls(**filtered_data)
+
+    def get_region(self) -> str:
+        """
+        从 FunctionArn 中提取地区信息
+        :return: 地区字符串
+        """
+        if not self.FunctionArn:
+            return 'NA'
+        return self.FunctionArn.split(':lambda:')[1].split(':')[0]
 
 
 @dataclass
@@ -129,7 +139,8 @@ def get_env_rgn_functions(env: Env, region: str) -> List[dict]:
 def get_env_rgn_functions_worker(
         env: Env, region: str,
         shared_dict_rgn_fn: Dict[str, Dict[str, dict]],
-        stop_event, manager
+        stop_event, manager,
+        verbose: bool = False,
 ):
     """
     Args:
@@ -142,7 +153,9 @@ def get_env_rgn_functions_worker(
     Raises:
         Exception: _description_
     """
-    print(f'Processing functions in region: {region}')
+    if verbose:
+        dt_start = datetime.now()
+        print(f'{dt_start.strftime(DT_FMT)} » Get functions start. region={region}')
     session = boto3.Session(region_name=region, profile_name=get_aws_profile(region, env.is_prod_aws))
     client = session.client('lambda', config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}))
 
@@ -176,7 +189,12 @@ def get_env_rgn_functions_worker(
 
         if not marker:
             break
-    print(f'Get {len(functions)} functions in region: {region}')
+    if verbose:
+        dt_stop = datetime.now()
+        print(
+            f'{dt_stop.strftime(DT_FMT)} » Get functions stop. region={region} cnt={len(functions)} '
+            f'span={(dt_stop-dt_start).total_seconds()}s'
+        )
 
 
 def get_functions_currency(env: Env, region: str, function_names: List[str]) -> Dict[str, dict]:
@@ -190,19 +208,28 @@ def get_functions_currency(env: Env, region: str, function_names: List[str]) -> 
     return ret
 
 
-def get_functions_currency_worker(
-        env: Env, region: str, function_name: str, shared_dict: dict, stop_event
+def get_function_currency_worker(
+        env: Env, region: str, function_name: str, shared_dict: dict, stop_event, verbose: bool = False
 ):
+    if verbose:
+        dt_start = datetime.now()
+        print(f'{dt_start.strftime(DT_FMT)} » Get function concurrency start. region={region} fn={function_name}')
     session = boto3.Session(region_name=region, profile_name=get_aws_profile(region, env.is_prod_aws))
     client = session.client('lambda', config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}))
     while not stop_event.is_set():
         try:
             resp = client.get_function_concurrency(FunctionName=function_name)
             shared_dict[function_name] = resp
-            return
+            break
         except ClientError as e:
             print(f'Exception: {e.__dict__}')
-            return
+            break
+    if verbose:
+        dt_stop = datetime.now()
+        print(
+            f'{dt_stop.strftime(DT_FMT)} » Get function concurrency stop. region={region} fn={function_name} '
+            f'span={(dt_stop-dt_start).total_seconds()}s'
+        )
 
 
 # region 保存、读取 json 文件
@@ -323,14 +350,13 @@ def main_parallel():
         stop_event = multiprocessing.Event()
         shared_dict_fn_ccy = manager.dict()
         processes_func_ccy = []
-        for rgn, rgn_fn in rgn_fn_all.items():
-            fn_names = list(rgn_fn.keys())
-            for fn_name in fn_names:
-                process = multiprocessing.Process(
-                    target=get_functions_currency_worker, args=(ENV, rgn, fn_name, shared_dict_fn_ccy, stop_event)
-                )
-                processes_func_ccy.append(process)
-                process.start()
+        for func in fn_curr_env_rgn:
+            rgn, fn_name = func.get_region(), func.FunctionName
+            process = multiprocessing.Process(
+                target=get_function_currency_worker, args=(ENV, rgn, fn_name, shared_dict_fn_ccy, stop_event)
+            )
+            processes_func_ccy.append(process)
+            process.start()
         try:
             for process in processes_func_ccy:
                 process.join()
@@ -409,7 +435,7 @@ def main():
         processes_func_ccy = []
         for fn in fn_curr_env_rgn:
             process = multiprocessing.Process(
-                target=get_functions_currency_worker, args=(ENV, rgn, fn.FunctionName, shared_dict, stop_event)
+                target=get_function_currency_worker, args=(ENV, rgn, fn.FunctionName, shared_dict, stop_event)
             )
             processes_func_ccy.append(process)
             process.start()

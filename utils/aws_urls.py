@@ -1,3 +1,10 @@
+def get_fleet_address(region: str, fleet_id: str) -> str:
+    if region.startswith('cn'):
+        return f'https://{region}.console.amazonaws.cn/gamelift/fleets/view/{fleet_id}?region={region}'
+    else:
+        return f'https://{region}.console.aws.amazon.com/gamelift/fleets/view/{fleet_id}?region={region}'
+
+
 def get_lambda_function_url(region: str, function_name):
     region = region
     if 'cn' in region:

@@ -1,3 +1,4 @@
+aiobotocore
 amazon.ion
 boto3
 dataclasses-json

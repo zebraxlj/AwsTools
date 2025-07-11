@@ -70,6 +70,45 @@ async def get_env_rgn_functions_async(env: Env, region: str, verbose: bool = Fal
         return {fn['FunctionName']: fn for fn in functions if 'FunctionName' in fn}
 
 
+_RGN_SEMAPHORE: Dict[str, asyncio.Semaphore] = {}  # tune this based on your observed rate limits
+
+
+async def get_all_function_concurrency(env: Env, fn_list: List[Function]) -> Dict[str, dict]:
+    concurrency_data = {}
+
+    # Group by region
+    region_groups: Dict[str, List[Function]] = {}
+    for fn in fn_list:
+        region_groups.setdefault(fn.get_region(), []).append(fn)
+
+    async def fetch_for_region(region: str, fn_group: List[Function]):
+        session = get_cached_session(region=region, env=env)
+        async with session.create_client(
+            'lambda',
+            region_name=region,
+            config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}, max_pool_connections=50)
+        ) as client:
+            async def get_concurrency(fn: Function):
+                if region not in _RGN_SEMAPHORE:
+                    if region.startswith('cn-'):
+                        _RGN_SEMAPHORE[region] = asyncio.Semaphore(20)
+                    else:
+                        _RGN_SEMAPHORE[region] = asyncio.Semaphore(10)
+                semaphore = _RGN_SEMAPHORE[region]
+                async with semaphore:
+                    try:
+                        resp = await client.get_function_concurrency(FunctionName=fn.FunctionName)  # type: ignore
+                        concurrency_data[fn.FunctionName] = resp
+                    except ClientError as e:
+                        print(f"[{region}] Error fetching {fn.FunctionName}: {e}")
+                        concurrency_data[fn.FunctionName] = {}
+
+            await asyncio.gather(*(get_concurrency(fn) for fn in fn_group))
+
+    await asyncio.gather(*(fetch_for_region(region, group) for region, group in region_groups.items()))
+    return concurrency_data
+
+
 async def get_function_currency_async(env: Env, region: str, function_name: str) -> dict:
     session = get_cached_session(region=region, env=env)
     async with session.create_client(
@@ -118,15 +157,7 @@ async def main_coroutine():
             fn_curr_env_rgn.append(Function.from_dict(fn_info))
 
     # 获取所有地区的函数并发设置
-    ccy_tasks = [
-        get_function_currency_async(ENV, fn.get_region(), fn.FunctionName)
-        for fn in fn_curr_env_rgn
-    ]
-    ccy_results = await asyncio.gather(*ccy_tasks)
-    fn_ccy_all = {
-        fn.FunctionName: ccy
-        for fn, ccy in zip(fn_curr_env_rgn, ccy_results)
-    }
+    fn_ccy_all = await get_all_function_concurrency(ENV, fn_curr_env_rgn)
 
     # 输出函数表格
     for fn in fn_curr_env_rgn:

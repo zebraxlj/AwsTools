@@ -1,6 +1,7 @@
 import boto3
+import boto3.session
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from utils.aws_client_helper import get_aws_profile
 from utils.aws_consts import AllEnvs, Env
@@ -53,7 +54,8 @@ def get_log_client(rgn: str, env: Env):
 
 
 def filter_log_events(
-        aws_region: str, log_group_name: str, pattern: str = '', dt_start: datetime = None, dt_end: datetime = None,
+        aws_region: str, log_group_name: str, pattern: str = '',
+        dt_start: Optional[datetime] = None, dt_end: Optional[datetime] = None,
         is_stop_on_match: bool = False,
         stop_event=None,
         ) -> List[dict]:

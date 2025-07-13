@@ -8,6 +8,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
+from multiprocessing.synchronize import Event
 from typing import Optional, List, Dict, ClassVar
 
 import boto3
@@ -15,7 +16,7 @@ import boto3.session
 import botocore.exceptions
 from botocore.client import Config as BotoConfig
 from botocore.exceptions import ClientError
-from dataclasses_json import dataclass_json
+from dataclasses_json import DataClassJsonMixin, dataclass_json
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 os.chdir('..')
@@ -25,7 +26,9 @@ from utils.aws_client_error_handler import handle_expired_token_exception, print
 from utils.aws_client_helper import get_aws_profile  # noqa: E402
 from utils.aws_consts import AllEnvs, REGION_ABBR, REGION_TO_ABBR  # noqa: E402
 from utils.aws_urls import get_fleet_address  # noqa: E402
-from utils.TablePrinter.table_printer import BaseRow, BaseTable, ColumnConfig, CondFmtExactMatch, CondFmtContain  # noqa: E402
+from utils.TablePrinter.table_printer import (  # noqa: E402
+    BaseRow, BaseTable, ColumnConfig, CondFmtExactMatch, CondFmtContain
+)
 from utils.TablePrinter.table_printer_consts import BoxDrawingChar  # noqa: E402
 
 # region 配置项
@@ -50,7 +53,7 @@ DT_FMT_S = '%m-%d %H:%M:%S'
 
 @dataclass_json
 @dataclass
-class FleetAttribute:
+class FleetAttribute(DataClassJsonMixin):
     FleetId: str
     FleetType: str
     Name: str
@@ -62,7 +65,7 @@ class FleetAttribute:
 
 @dataclass_json
 @dataclass
-class FleetCapacity:
+class FleetCapacity(DataClassJsonMixin):
     FleetId: str
     InstanceType: str
     InstanceCounts: dict
@@ -72,7 +75,7 @@ class FleetCapacity:
 
 @dataclass_json
 @dataclass
-class FleetLocationAttribute:
+class FleetLocationAttribute(DataClassJsonMixin):
     @dataclass_json
     @dataclass
     class FleetLocationState:
@@ -85,7 +88,7 @@ class FleetLocationAttribute:
 
 @dataclass_json
 @dataclass
-class FleetLocationCapacity:
+class FleetLocationCapacity(DataClassJsonMixin):
     FleetId: str
     InstanceType: str = 'Unknown'
     InstanceCounts: dict = field(default_factory=dict)
@@ -354,7 +357,7 @@ def process_get_fleet_location_status(env, sub_env, region: str, shared_output: 
                 for fleet_id, fleet_attr in env_fleets_info_dict.items():
                     # print('fleet_attr:', fleet_attr.to_dict())
 
-                    fleet_capacities: List[FleetCapacity] = env_fleets_capacity_dict.get(fleet_id, None)
+                    fleet_capacities: List[FleetCapacity] = env_fleets_capacity_dict.get(fleet_id, [])
                     for fleet_capacity in fleet_capacities:
                         if fleet_capacity is None:
                             continue
@@ -391,17 +394,17 @@ def __mask_fleet_id(fleet_id: str) -> str:
 
 
 @keyboard_interrupt_handler
-def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop_event: multiprocessing.Event):
+def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop_event: Event):
     last_update_dt: datetime = datetime(2024, 1, 1)
     while not stop_event.is_set():
-        if any(v.LastCheckedDt > last_update_dt for v in shared_output.values()):
+        if any(v.LastCheckedDt > last_update_dt for v in shared_output.values() if v.LastCheckedDt is not None):
             table = EnvFleetStatusTbl()
             for k, v in shared_output.items():
                 v.Region = REGION_TO_ABBR.get(v.Region, v.Region)
                 v.FleetId = __mask_fleet_id(v.FleetId)
                 v.FleetType = '按需OD' if v.FleetType == 'ON_DEMAND' else v.FleetType
                 table.insert_row(v)
-                last_update_dt = max(last_update_dt, v.LastCheckedDt)
+                last_update_dt = max(last_update_dt, v.LastCheckedDt) if v.LastCheckedDt is not None else last_update_dt
 
             # 准备输出数据：表头行、表头分割行
             lines = [table.get_table_header_str(), table.get_table_header_sep_str()]
@@ -421,8 +424,8 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
                 row: EnvFleetStatusRow
                 if row_prev is not None and row_prev.Region != row.Region:
                     lines.append(table.get_table_line_sep_str(
-                        sep_h=BoxDrawingChar.DOUBLE_HORIZONTAL, 
-                        sep_v=BoxDrawingChar.VERTICAL_SINGLE_AND_HORIZONTAL_DOUBLE
+                        sep_h=BoxDrawingChar.DOUBLE_HORIZONTAL,
+                        sep_v=BoxDrawingChar.VERTICAL_SINGLE_AND_HORIZONTAL_DOUBLE,
                     ))
                 elif row_prev is not None and row_prev.InstanceType != row.InstanceType:
                     lines.append(table.get_table_line_sep_str(
@@ -448,7 +451,7 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
 
 
 def fetch_fleet_status():
-    stop_event: multiprocessing.Event = multiprocessing.Event()  # type: ignore
+    stop_event: Event = multiprocessing.Event()
 
     with multiprocessing.Manager() as manager:
         shared_dict = manager.dict()
@@ -510,7 +513,7 @@ def main():
     arg_is_prod = args.prod
     arg_env_name = args.environment_name
     arg_sub_env = args.sub_environment_name
-    arg_regions = args.regions if args.regions else []
+    arg_regions: list[str] = args.regions if args.regions else []
 
     global ENV, SUB_ENV, REGIONS
 

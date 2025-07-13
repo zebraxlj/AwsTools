@@ -1,0 +1,553 @@
+import argparse
+import asyncio
+import functools
+import multiprocessing
+import os
+import platform
+import sys
+import time
+import traceback
+from datetime import datetime
+from multiprocessing.synchronize import Event
+from typing import Optional, List, Dict, Tuple
+
+import boto3
+import botocore.exceptions
+from aiobotocore.session import AioSession
+from botocore.client import Config as BotoConfig
+from botocore.exceptions import ClientError
+
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+os.chdir('..')
+sys.path.append(os.getcwd())
+
+from GameLift.fleet_info_consts import DT_FMT_M  # noqa: E402
+from GameLift.fleet_info_types import (  # noqa: E402
+    EnvFleetStatusRow, EnvFleetStatusTbl,
+    FleetAttribute, FleetCapacity, FleetLocationAttribute, FleetLocationCapacity
+)
+from utils.aws_client_error_handler import handle_expired_token_exception, print_err  # noqa: E402
+from utils.aws_client_helper import get_aws_profile  # noqa: E402
+from utils.aws_consts import AllEnvs, Env, REGION_ABBR, REGION_TO_ABBR  # noqa: E402
+from utils.aws_urls import get_fleet_address  # noqa: E402
+from utils.TablePrinter.table_printer_consts import BoxDrawingChar  # noqa: E402
+
+# region 配置项
+# ENV, SUB_ENV = AllEnvs.NemoTestComedy, ''
+ENV, SUB_ENV = AllEnvs.PartyAnimals, '141270'
+REGIONS = [  # 需要拉取的地区
+    'cn-northwest-1',
+    'ap-northeast-1',
+    'eu-central-1',
+    'us-east-1',
+]
+REFRESH_INTERVAL = 60  # 刷新间隔，单位：秒，注意：boto3 gamelift 接口并发有限，如果间隔过短，会导致接口服务过载
+POLLING_DURATION = 20  # 监控时长，单位：分
+ENABLE_TERMINAL_UPDATE = False
+# endregion 配置项
+
+_AIOSESSION_CACHE: Dict[str, AioSession] = {}  # Cache for AioSession
+_SESSION_CACHE: Dict[str, boto3.Session] = {}  # Cache for boto3.Session
+
+if REFRESH_INTERVAL < 30:
+    raise Exception('REFRESH_INTERVAL 太小，可能导致 gamelift client 过载')
+
+
+def keyboard_interrupt_handler(func):
+    @functools.wraps(func)
+    def handle(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except KeyboardInterrupt:
+            pass
+
+    return handle
+
+
+def get_cached_aiosession(region: str, env: Env) -> AioSession:
+    key = f'{region}:{env.is_prod_aws}'
+    if key not in _AIOSESSION_CACHE:
+        _AIOSESSION_CACHE[key] = AioSession(profile=get_aws_profile(region, env.is_prod_aws))
+    return _AIOSESSION_CACHE[key]
+
+
+def get_cached_session(region: str, env: Env) -> boto3.Session:
+    key = f'{region}:{env.is_prod_aws}'
+    if key not in _SESSION_CACHE:
+        _SESSION_CACHE[key] = boto3.Session(region_name=region, profile_name=get_aws_profile(region, env.is_prod_aws))
+    return _SESSION_CACHE[key]
+
+
+async def describe_fleet_location_attribute_all(
+        region: str, env: Env, fleet_ids: List[str]
+) -> Dict[str, Tuple[bool, List[FleetLocationAttribute]]]:
+    env_fleets_location_attributes_dict = {}
+    session = get_cached_aiosession(region=region, env=env)
+    async with session.create_client(
+        'gamelift',
+        region_name=region,
+        config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}, max_pool_connections=50)
+    ) as client:
+        async def describe_fleet_location_attribute(fleet_id: str):
+            next_token = None
+            fleets_location_attrs: List[FleetLocationAttribute] = []
+            support_multi_location = True
+            while True:
+                try:
+                    kwargs = {'NextToken': next_token} if next_token else {}
+                    data = await client.describe_fleet_location_attributes(FleetId=fleet_id, **kwargs)  # type: ignore
+                except botocore.exceptions.ClientError as error:
+                    if error.response['Error']['Code'] == 'UnsupportedRegionException':
+                        # 地区不支持 multilocation fleet
+                        support_multi_location = False
+                        break
+                    else:
+                        raise error
+                except Exception as e:
+                    print(e)
+                    print(''.join(list(reversed(traceback.format_tb(e.__traceback__)))))
+                    time.sleep(15)
+                    continue
+                if 'LocationAttributes' not in data:
+                    raise Exception('Missing Key(LocationAttributes) in boto3 describe_fleet_location_attributes resp')
+
+                fleets_location_attrs += [FleetLocationAttribute.from_dict(d) for d in data['LocationAttributes']]
+                next_token = data.get('NextToken', '')
+                if not next_token:
+                    break
+            env_fleets_location_attributes_dict[fleet_id] = support_multi_location, fleets_location_attrs
+        async with asyncio.Semaphore(20):
+            await asyncio.gather(*(describe_fleet_location_attribute(fleet_id=fleet_id) for fleet_id in fleet_ids))
+    return env_fleets_location_attributes_dict
+
+
+async def is_multilocation_supported(region: str, env: Env, fleet_id: str) -> bool:
+    session = get_cached_aiosession(region=region, env=env)
+    async with session.create_client("gamelift", region_name=region) as client:
+        try:
+            await client.describe_fleet_location_attributes(FleetId=fleet_id)  # type: ignore
+            return True
+        except botocore.exceptions.ClientError as error:
+            if error.response['Error']['Code'] == 'UnsupportedRegionException':
+                return False
+            else:
+                raise error
+
+
+async def get_multilocation_fleets_async(region: str, env: Env, fleet_ids: List[str]) -> Tuple[Dict, Dict]:
+    """_summary_
+
+    Args:
+        region (str): _description_
+        env (Env): _description_
+        fleet_ids (List[str]): _description_
+
+    Raises:
+        Exception: _description_
+    """
+    fleet_location_attributes_all: Dict[str, List[FleetLocationAttribute]] = {}
+    fleet_location_capacity_all: Dict[str, List[FleetLocationCapacity]] = {}
+
+    session = get_cached_aiosession(region=region, env=env)
+    async with session.create_client('gamelift', region_name=region) as client:
+        async def handle_multilocation_fleet_one_async(fleet_id: str):
+            # 获取 Fleet Location Attribute
+            next_token = None
+            fleets_location_attrs: List[FleetLocationAttribute] = []
+            while True:
+                try:
+                    kwargs = {'NextToken': next_token} if next_token else {}
+                    data = await client.describe_fleet_location_attributes(FleetId=fleet_id, **kwargs)  # type: ignore
+                except Exception as e:
+                    print(e)
+                    print(''.join(list(reversed(traceback.format_tb(e.__traceback__)))))
+                    time.sleep(15)
+                    continue
+                if 'LocationAttributes' not in data:
+                    raise Exception('Missing Key(LocationAttributes) in boto3 describe_fleet_location_attributes resp')
+                fleets_location_attrs += [FleetLocationAttribute.from_dict(d) for d in data['LocationAttributes']]
+                next_token = data.get('NextToken', '')
+                if not next_token:
+                    break
+            fleet_location_attributes_all[fleet_id] = fleets_location_attrs
+
+            # 获取 Fleet Location Capacity
+            fleet_location_capacity: List[FleetLocationCapacity] = []
+            for attr in fleets_location_attrs:
+                try:
+                    data = await client.describe_fleet_location_capacity(
+                        FleetId=fleet_id, Location=attr.LocationState.Location
+                    )  # type: ignore
+                    # print(f'describe_fleet_location_capacity: {data}')
+                except Exception as e:
+                    print(e)
+                    print(''.join(list(reversed(traceback.format_tb(e.__traceback__)))))
+                    continue
+
+                if 'FleetCapacity' not in data:
+                    raise Exception('Missing Key(FleetCapacity) in boto3 describe_fleet_location_capacity resp')
+                fleet_location_capacity.append(FleetLocationCapacity.from_dict(data['FleetCapacity']))
+            fleet_location_capacity_all[fleet_id] = fleet_location_capacity
+
+        async with asyncio.Semaphore(20):
+            await asyncio.gather(*(handle_multilocation_fleet_one_async(fleet_id=fleet_id) for fleet_id in fleet_ids))
+        return fleet_location_attributes_all, fleet_location_capacity_all
+
+
+async def get_non_multilocation_fleets_async(
+    region: str, env: Env, fleet_ids: List[str]
+) -> Dict[str, List[FleetCapacity]]:
+    env_fleets_capacity_dict: Dict[str, List[FleetCapacity]] = {}
+
+    env_fleets_capacity_dict_all = []
+    next_token = None
+    session: AioSession = get_cached_aiosession(region=region, env=env)
+    async with session.create_client('gamelift', region_name=region) as client:
+        # 获取所有 fleet capacity
+        while True:
+            kwargs = {'NextToken': next_token} if next_token else {}
+            try:
+                data = await client.describe_fleet_capacity(FleetIds=fleet_ids, **kwargs)  # type: ignore
+                # print(f'describe_fleet_capacity: {data}')
+            except Exception as e:
+                print(e)
+                print(''.join(list(reversed(traceback.format_tb(e.__traceback__)))))
+                time.sleep(10)
+                continue
+            # 返回结构：https://boto3.amazonaws.com/v1/documentation/api/1.14.25/reference/services/gamelift.html#GameLift.Client.describe_fleet_capacity
+            if 'FleetCapacity' not in data:
+                raise Exception('Missing Key(FleetCapacity) in boto3 describe_fleet_capacity resp')
+
+            # print(data['FleetCapacity'])
+            env_fleets_capacity_dict_all += data['FleetCapacity']
+            next_token = data.get('NextToken', '')
+            if not next_token:
+                break
+
+        for fc in env_fleets_capacity_dict_all:
+            fleet_capacity = FleetCapacity.from_dict(fc)
+            fleet_capacity.LastCheckedDt = datetime.now()
+            if fleet_capacity.FleetId in env_fleets_capacity_dict:
+                env_fleets_capacity_dict[fleet_capacity.FleetId].append(fleet_capacity)
+            else:
+                env_fleets_capacity_dict[fleet_capacity.FleetId] = [fleet_capacity]
+    return env_fleets_capacity_dict
+
+
+@keyboard_interrupt_handler
+def process_get_fleet_location_status(env, sub_env, region: str, shared_output: dict, stop_event):
+    session = boto3.Session(region_name=region, profile_name=get_aws_profile(region, env.is_prod_aws))
+    client = session.client('gamelift', config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}))
+    has_multiloc: Optional[bool] = None
+
+    while not stop_event.is_set():
+        # 获取所有 Fleets Attributes
+        fleets_attr_all = []
+        next_token = None
+        is_token_expired = False
+        while True:
+            kwargs = {'NextToken': next_token} if next_token else {}
+            try:
+                data = client.describe_fleet_attributes(**kwargs)
+            except ClientError as e:
+                err_msg = e.response['Error']['Message']
+                if (
+                    'security token included in the request is expired' in err_msg
+                    or 'security token included in the request is invalid' in err_msg
+                ):
+                    handle_expired_token_exception(session)
+                    is_token_expired = True
+                else:
+                    print(e, ''.join(list(reversed(traceback.format_tb(e.__traceback__)))), sep='\n')
+                break
+            except Exception as e:
+                print(e, ''.join(list(reversed(traceback.format_tb(e.__traceback__)))), sep='\n')
+                time.sleep(15)
+                continue
+            # 返回结构： https://boto3.amazonaws.com/v1/documentation/api/1.14.25/reference/services/gamelift.html#GameLift.Client.describe_fleet_attributes # noqa
+            if 'FleetAttributes' not in data:
+                raise Exception('Missing Key(FleetAttributes) in boto3 describe_fleet_attributes resp')
+
+            fleets_attr_all += data['FleetAttributes']
+            next_token = data.get('NextToken', '')
+            if not next_token:
+                break
+
+        # 筛选 Fleets Attributes
+        sub_env = sub_env if sub_env else ''
+        env_fleets_info_dict: Dict[str, FleetAttribute] = {
+            f['FleetId']: FleetAttribute.from_dict(f) for f in fleets_attr_all
+            if f['Name'].startswith(f'{env.name}--{sub_env}')
+        }
+        for k, v in env_fleets_info_dict.items():
+            env_fleets_info_dict[k].Region = region
+
+        # 处理 Fleets Attributes 没有返回的情况
+        output_key_na = f'{region}:NA:NA'
+        if not env_fleets_info_dict:
+            row_kwargs = {}
+            if is_token_expired:
+                row_kwargs['Name'] = 'AWS MFA Expired'
+            shared_output[output_key_na] = EnvFleetStatusRow(SubEnv=int(sub_env), Region=region, **row_kwargs)
+            time.sleep(REFRESH_INTERVAL)
+            continue
+
+        if output_key_na in shared_output:
+            shared_output.pop(output_key_na)
+
+        if stop_event.is_set():
+            break
+
+        fleet_ids = list(env_fleets_info_dict.keys())
+
+        # 检查当前地区是否支持 multi location
+        if has_multiloc is None:
+            has_multiloc = asyncio.run(is_multilocation_supported(region=region, env=env, fleet_id=fleet_ids[0]))
+
+        if has_multiloc:
+            # 支持 multi location 的地区
+            fleet_location_attributes_all: Dict[str, List[FleetLocationAttribute]]
+            fleet_location_capacity_all: Dict[str, List[FleetLocationCapacity]]
+
+            fleet_location_attributes_all, fleet_location_capacity_all =\
+                asyncio.run(get_multilocation_fleets_async(region, env, fleet_ids))
+
+            for fleet_id in fleet_ids:
+                fleets_location_attrs = fleet_location_attributes_all[fleet_id]
+                fleets_location_capacity = fleet_location_capacity_all[fleet_id]
+
+                locations = set([attr.LocationState.Location for attr in fleets_location_attrs])
+                locations = locations.union([elem.Location for elem in fleets_location_capacity])
+                for location in locations:
+                    tmp_attrs_list: List[FleetLocationAttribute] = [
+                        elem for elem in fleets_location_attrs if elem.LocationState.Location == location
+                    ]
+                    tmp_capacity_list: List[FleetLocationCapacity] = [
+                        elem for elem in fleets_location_capacity if elem.Location == location
+                    ]
+                    fleet_location_attrs: FleetLocationAttribute = (
+                        tmp_attrs_list[0] if tmp_attrs_list
+                        else FleetLocationAttribute()
+                    )
+                    fleet_location_capacity: FleetLocationCapacity = (
+                        tmp_capacity_list[0] if tmp_capacity_list
+                        else FleetLocationCapacity(FleetId=fleet_id, Location=location)
+                    )
+
+                    shared_output[f'{region}:{fleet_id}:{location}'] = EnvFleetStatusRow(
+                        Region=region,
+                        SubEnv=int(env_fleets_info_dict[fleet_id].Name.split('--')[-1].split('-')[0]),
+                        FleetId=fleet_id,
+                        FleetType=env_fleets_info_dict[fleet_id].FleetType,
+                        Name=env_fleets_info_dict[fleet_id].Name,
+                        Name_href=get_fleet_address(region, fleet_id),
+                        CreateTime=env_fleets_info_dict[fleet_id].CreationTime.strftime(DT_FMT_M)[:-2],
+                        Status=env_fleets_info_dict[fleet_id].Status,
+                        InstanceType=fleet_location_capacity.InstanceType,
+                        Desired=fleet_location_capacity.InstanceCounts.get('DESIRED', -1),
+                        Minimum=fleet_location_capacity.InstanceCounts.get('MINIMUM', -1),
+                        Maximum=fleet_location_capacity.InstanceCounts.get('MAXIMUM', -1),
+                        Pending=fleet_location_capacity.InstanceCounts.get('PENDING', -1),
+                        Active=fleet_location_capacity.InstanceCounts.get('ACTIVE', -1),
+                        Idle=fleet_location_capacity.InstanceCounts.get('IDLE', -1),
+                        Terminating=fleet_location_capacity.InstanceCounts.get('TERMINATING', -1),
+                        InstanceLocation=location,
+                        LocationStatus=fleet_location_attrs.LocationState.Status,
+                    )
+        else:
+            # 不支持 multi location 的地区
+            fleet_capacity_all: Dict[str, List[FleetCapacity]]
+            fleet_capacity_all = asyncio.run(get_non_multilocation_fleets_async(region, env, fleet_ids))
+
+            for fleet_id, fleet_attr in env_fleets_info_dict.items():
+                # print('fleet_attr:', fleet_attr.to_dict())
+                fleet_capacities: List[FleetCapacity] = fleet_capacity_all.get(fleet_id, [])
+                for fleet_capacity in fleet_capacities:
+                    if fleet_capacity is None:
+                        continue
+                    # print('\tfleet_capacity:', fleet_capacity.to_dict())
+                    shared_output[f'{region}:{fleet_id}:{fleet_capacity.Location}'] = EnvFleetStatusRow(
+                        Region=region,
+                        SubEnv=int(fleet_attr.Name.split('--')[-1].split('-')[0]),
+                        FleetId=fleet_attr.FleetId,
+                        FleetType=fleet_attr.FleetType,
+                        Name=fleet_attr.Name,
+                        Name_href=get_fleet_address(region, fleet_id),
+                        CreateTime=fleet_attr.CreationTime.strftime(DT_FMT_M)[:-2],
+                        Status=fleet_attr.Status,
+                        InstanceType=fleet_capacity.InstanceType,
+                        Desired=fleet_capacity.InstanceCounts.get('DESIRED', -1),
+                        Minimum=fleet_capacity.InstanceCounts.get('MINIMUM', -1),
+                        Maximum=fleet_capacity.InstanceCounts.get('MAXIMUM', -1),
+                        Pending=fleet_capacity.InstanceCounts.get('PENDING', -1),
+                        Active=fleet_capacity.InstanceCounts.get('ACTIVE', -1),
+                        Idle=fleet_capacity.InstanceCounts.get('IDLE', -1),
+                        Terminating=fleet_capacity.InstanceCounts.get('TERMINATING', -1),
+                        InstanceLocation=fleet_capacity.Location,
+                        LocationStatus='不支持',
+                    )
+        time.sleep(REFRESH_INTERVAL)
+
+
+def __mask_fleet_id(fleet_id: str) -> str:
+    tokens = fleet_id.split('-')
+    if len(tokens) < 2:
+        return fleet_id
+    return f'***-{tokens[-1]}'
+
+
+@keyboard_interrupt_handler
+def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop_event: Event):
+    last_update_dt: datetime = datetime(2024, 1, 1)
+    while not stop_event.is_set():
+        if any(v.LastCheckedDt > last_update_dt for v in shared_output.values() if v.LastCheckedDt is not None):
+            table = EnvFleetStatusTbl()
+            for k, v in shared_output.items():
+                v.Region = REGION_TO_ABBR.get(v.Region, v.Region)
+                v.FleetId = __mask_fleet_id(v.FleetId)
+                v.FleetType = '按需OD' if v.FleetType == 'ON_DEMAND' else v.FleetType
+                table.insert_row(v)
+                last_update_dt = max(last_update_dt, v.LastCheckedDt) if v.LastCheckedDt is not None else last_update_dt
+
+            # 准备输出数据：表头行、表头分割行
+            lines = [table.get_table_header_str(), table.get_table_header_sep_str()]
+            # 准备输出数据：表行排序
+            rows_sorted: List[EnvFleetStatusRow] = table.get_sorted_rows(
+                order_by=['SubEnv', 'Region', 'Name', 'InstanceType', 'Status', 'InstanceLocation'],
+                ascending=[False, True, False, True, True, True],
+            )
+            # 准备输出数据：额外排序逻辑
+            rows_sorted.sort(key=lambda _row: REGIONS.index(str(REGION_ABBR[_row.Region])))
+
+            # 准备输出数据：数据行、数据分割行
+            row_prev: Optional[EnvFleetStatusRow] = None
+            for row in rows_sorted:
+                # If you don't know what you are doing, it's recommended to add the separator regarding to the sorting order. # noqa
+                # Otherwise, you may see same column value being separated into different chunks and the output looks weird. # noqa
+                row: EnvFleetStatusRow
+                if row_prev is not None and row_prev.Region != row.Region:
+                    lines.append(table.get_table_line_sep_str(
+                        sep_h=BoxDrawingChar.DOUBLE_HORIZONTAL,
+                        sep_v=BoxDrawingChar.VERTICAL_SINGLE_AND_HORIZONTAL_DOUBLE,
+                    ))
+                elif row_prev is not None and row_prev.InstanceType != row.InstanceType:
+                    lines.append(table.get_table_line_sep_str(
+                        sep_h=BoxDrawingChar.LIGHT_HORIZONTAL, sep_v=BoxDrawingChar.LIGHT_VERTICAL, dense=False
+                    ))
+                lines.append(table.get_table_line_str(row))
+                row_prev = row
+
+            # 输出表单
+            if ENABLE_TERMINAL_UPDATE:
+                pass
+            else:
+                sys_type = platform.system()
+                if sys_type == 'Windows':
+                    os.system('cls')
+                else:
+                    os.system('clear')
+                for line in lines:
+                    print(line)
+                print('\n', 'Ctrl+c 停止获取', sep='')
+
+        time.sleep(3)
+
+
+def fetch_fleet_status():
+    stop_event: Event = multiprocessing.Event()
+
+    with multiprocessing.Manager() as manager:
+        shared_dict = manager.dict()
+
+        processes = []
+        for rgn in REGIONS:
+            process = multiprocessing.Process(
+                target=process_get_fleet_location_status, args=(ENV, SUB_ENV, rgn, shared_dict, stop_event,))
+            processes.append(process)
+            process.start()
+
+        process_print = multiprocessing.Process(
+            target=process_print_fleet_status, args=(shared_dict, stop_event,))
+        process_print.start()
+
+        try:
+            time.sleep(POLLING_DURATION * 60)  # 默认最长运行 20 分钟
+        except KeyboardInterrupt:
+            print('Keyboard Interrupted')
+        finally:
+            stop_event.set()
+            process_print.join()
+            for process in processes:
+                process.join()
+        print("All Processes completed.")
+
+
+def parse_args(args: List[str]):
+    parser = argparse.ArgumentParser(
+        description='获取特定环境、子环境、地区的 fleet 状态',
+        epilog='用例：python env_fleet_status_fetcher.py -prod -sen 141270'
+    )
+    parser.add_argument('--environment-name', '-en',
+                        help='环境名',
+                        default='')
+    parser.add_argument('--sub-environment-name', '-sen',
+                        help='子环境',
+                        default='')
+    parser.add_argument('--regions', '-rgn',
+                        help=(
+                            'fleet 地区。允许: cn-north-1, BJ, cn-northwest-1, NX, ap-northeast-1, AP, '
+                            'eu-central-1, EU, us-east-1, US'
+                        ),
+                        nargs='+',
+                        default=None)
+    parser.add_argument('-prod',
+                        help=(
+                            '简写：直接获取 PartyAnimals 生产环境 fleet 情况。'
+                            '效果等同于 -en PartyAnimals, 会忽略 --environment-name 输入'
+                        ),
+                        action='store_true',
+                        default=False)
+    parser.add_argument('--duration', '-dur',
+                        help='脚本执行时长，单位：分钟',
+                        default=None,
+                        )
+    return parser.parse_args(args)
+
+
+def main():
+    args = parse_args(sys.argv[1:])
+
+    arg_is_prod = args.prod
+    arg_env_name = args.environment_name
+    arg_sub_env = args.sub_environment_name
+    arg_regions: list[str] = args.regions if args.regions else []
+    arg_duration: Optional[int] = int(args.duration) if args.duration else None
+
+    global ENV, SUB_ENV, REGIONS, POLLING_DURATION
+
+    if arg_is_prod:
+        if arg_env_name:
+            print(f'同时输入 -prod 和 -en，将获取 PA 生产 Fleet 情况，忽略 -en={arg_env_name}')
+        ENV = AllEnvs.PartyAnimals
+    elif arg_env_name:
+        ENV = AllEnvs.get_env_by_name(arg_env_name)
+        if not ENV:
+            print_err(f'环境不存在： -en={arg_env_name}')
+            sys.exit(1)
+
+    SUB_ENV = str(arg_sub_env) if arg_sub_env else SUB_ENV
+
+    arg_regions = sorted(REGION_ABBR.get(r, r) for r in arg_regions)
+    bad_regions = [r for r in arg_regions if r not in REGION_ABBR.values()]
+    if bad_regions:
+        print_err(f'地区不支持：{bad_regions}')
+        sys.exit(1)
+
+    REGIONS = arg_regions if arg_regions else REGIONS
+    POLLING_DURATION = POLLING_DURATION if arg_duration is None else arg_duration
+
+    fetch_fleet_status()
+
+
+if __name__ == '__main__':
+    main()

@@ -3,6 +3,7 @@ import os
 import string
 import sys
 from datetime import datetime
+from multiprocessing import Pool
 from typing import Dict, List, Tuple
 
 from aiobotocore.session import AioSession
@@ -150,6 +151,36 @@ async def get_function_currency_async(env: Env, region: str, function_name: str)
             return {}
 
 
+def handle_function_n_ccy(fn_fn_ccy: List[Tuple[Function, dict]]):
+    """处理函数和并发设置的列表，并打印表格
+
+    Args:
+        fn_fn_ccy (List[Tuple[Function, dict]]): Function: 见类定义, dict: 并发设置的返回
+    """
+    table = FunctionTable()
+    for fn, fn_ccy in fn_fn_ccy:
+        fn_rgn = fn.FunctionArn.split(':lambda:')[1].split(':')[0]
+        if not fn_ccy:
+            ccy_setting = '未知'
+        elif 'ReservedConcurrentExecutions' in fn_ccy:
+            reserved_ccy = fn_ccy['ReservedConcurrentExecutions']
+            ccy_setting = 'Throttled' if reserved_ccy == 0 else f'{reserved_ccy}'
+        else:
+            ccy_setting = '非预留账户并发'
+        reserved_ccy = fn_ccy.get('ReservedConcurrentExecutions', -1)
+        last_modified_dt = datetime.strptime(fn.LastModified, '%Y-%m-%dT%H:%M:%S.%f%z') if fn.LastModified else None
+        table.insert_row(FunctionRow(
+            FunctionName=fn.FunctionName,
+            Region=fn_rgn,
+            Timeout=fn.Timeout,
+            MemorySize=fn.MemorySize,
+            ConcurrencySetting=ccy_setting,
+            LastDeployDt=datetime.strftime(last_modified_dt, '%Y-%m-%d %H:%M %z')[:-2] if last_modified_dt else 'NA',
+            FunctionName_href=get_lambda_function_url(fn_rgn, fn.FunctionName),
+        ))
+    table.print_table(order_by=['FunctionName', 'Region'])
+
+
 async def region_function_coroutine(rgn: str) -> Dict[str, Tuple[Function, dict]]:
     """获取地区内所有函数信息和并发设置
 
@@ -182,37 +213,31 @@ async def region_function_coroutine(rgn: str) -> Dict[str, Tuple[Function, dict]
     return ret
 
 
-async def main_coroutine():
-    table = FunctionTable()
+def region_function_task(region: str):
+    return asyncio.run(region_function_coroutine(region))
 
+
+async def main_coroutine():
     results: List[Dict[str, Tuple[Function, dict]]]
     results = await asyncio.gather(*(region_function_coroutine(rgn) for rgn in REGIONS))
     fn_fn_ccy = [elem for result in results for elem in result.values()]  # Flatten the list of dicts
-
-    for fn, fn_ccy in fn_fn_ccy:
-        fn_rgn = fn.FunctionArn.split(':lambda:')[1].split(':')[0]
-        if not fn_ccy:
-            ccy_setting = '未知'
-        elif 'ReservedConcurrentExecutions' in fn_ccy:
-            reserved_ccy = fn_ccy['ReservedConcurrentExecutions']
-            ccy_setting = 'Throttled' if reserved_ccy == 0 else f'{reserved_ccy}'
-        else:
-            ccy_setting = '非预留账户并发'
-        reserved_ccy = fn_ccy.get('ReservedConcurrentExecutions', -1)
-        last_modified_dt = datetime.strptime(fn.LastModified, '%Y-%m-%dT%H:%M:%S.%f%z') if fn.LastModified else None
-        table.insert_row(FunctionRow(
-            FunctionName=fn.FunctionName,
-            Region=fn_rgn,
-            Timeout=fn.Timeout,
-            MemorySize=fn.MemorySize,
-            ConcurrencySetting=ccy_setting,
-            LastDeployDt=datetime.strftime(last_modified_dt, '%Y-%m-%d %H:%M %z')[:-2] if last_modified_dt else 'NA',
-            FunctionName_href=get_lambda_function_url(fn_rgn, fn.FunctionName),
-        ))
-    table.print_table(order_by=['FunctionName', 'Region'])
+    handle_function_n_ccy(fn_fn_ccy)
 
 
-if __name__ == '__main__':
+def main_coroutine_sync():
     ret = asyncio.run(main_coroutine())
     if ret:
         print(f'Error: {ret}')
+
+
+def main_multiprocess():
+    results: List[Dict[str, Tuple[Function, dict]]]
+    with Pool(processes=len(REGIONS)) as pool:
+        results = pool.map(region_function_task, REGIONS)
+    fn_fn_ccy = [elem for result in results for elem in result.values()]  # Flatten the list of dicts
+    handle_function_n_ccy(fn_fn_ccy)
+
+
+if __name__ == '__main__':
+    main_multiprocess()
+    # main_coroutine_sync()

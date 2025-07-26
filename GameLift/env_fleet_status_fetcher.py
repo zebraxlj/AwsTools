@@ -41,6 +41,7 @@ REGIONS = [  # 需要拉取的地区
     'us-east-1',
 ]
 REFRESH_INTERVAL = 60  # 刷新间隔，单位：秒，注意：boto3 gamelift 接口并发有限，如果间隔过短，会导致接口服务过载
+POLLING_DURATION = 20  # 监控时长，单位：分
 ENABLE_TERMINAL_UPDATE = False
 # endregion 配置项
 
@@ -360,7 +361,7 @@ def fetch_fleet_status():
         process_print.start()
 
         try:
-            time.sleep(20 * 60)  # 默认最长运行 20 分钟
+            time.sleep(POLLING_DURATION * 60)  # 默认最长运行 20 分钟
         except KeyboardInterrupt:
             print('Keyboard Interrupted')
         finally:
@@ -396,6 +397,10 @@ def parse_args(args: List[str]):
                         ),
                         action='store_true',
                         default=False)
+    parser.add_argument('--duration', '-dur',
+                        help='脚本执行时长，单位：分钟',
+                        default=None,
+                        )
     return parser.parse_args(args)
 
 
@@ -406,8 +411,9 @@ def main():
     arg_env_name = args.environment_name
     arg_sub_env = args.sub_environment_name
     arg_regions: list[str] = args.regions if args.regions else []
+    arg_duration: int = int(args.duration)
 
-    global ENV, SUB_ENV, REGIONS
+    global ENV, SUB_ENV, REGIONS, POLLING_DURATION
 
     if arg_is_prod:
         if arg_env_name:
@@ -428,6 +434,7 @@ def main():
         sys.exit(1)
 
     REGIONS = arg_regions if arg_regions else REGIONS
+    POLLING_DURATION = POLLING_DURATION if arg_duration is None else arg_duration
 
     fetch_fleet_status()
 

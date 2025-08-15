@@ -11,9 +11,9 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 os.chdir('..')
 sys.path.append(os.getcwd())
 
-from CloudWatch.cloud_watch_helper import get_log_client, filter_log_events
-from utils.aws_client_error_handler import print_err
-from utils.aws_consts import REGION_ABBR, REGION_TO_ABBR, AllEnvs
+from CloudWatch.cloud_watch_helper import get_log_client, filter_log_events  # noqa: E402
+from utils.aws_client_error_handler import print_err  # noqa: E402
+from utils.aws_consts import REGION_ABBR, REGION_TO_ABBR, AllEnvs  # noqa: E402
 
 '''
 PartyAnimals--158820-StoreFunction
@@ -162,7 +162,7 @@ def run_parallel(log_group_names: List[str], regions: List[str]):
         shared_msg_dict = manager.dict()
         shared_dict = manager.dict()
 
-        processes: multiprocessing.Process = []
+        processes: List[multiprocessing.Process] = []
         for group_name in log_group_names:
             for rgn in regions:
                 process = multiprocessing.Process(
@@ -277,12 +277,13 @@ def __prepare_global_var(args):
     print('__prepare_global_var', 'FIND_FIRST', FIND_FIRST)
 
     # 处理地区
-    arg_regions = sorted(REGION_ABBR.get(r, r) for r in arg_regions)
-    bad_regions = [r for r in arg_regions if r not in REGION_ABBR.values()]
+    bad_regions = [r for r in arg_regions if r not in REGION_ABBR and r not in REGION_TO_ABBR]
     if bad_regions:
         print_err(f'地区不支持：{bad_regions}')
         sys.exit(1)
-    REGIONS = arg_regions if arg_regions else REGIONS
+
+    arg_regions = [REGION_TO_ABBR.get(r, r) for r in arg_regions if r is not None]
+    REGIONS = sorted(r for r in arg_regions if r) if arg_regions else REGIONS
 
     # # 处理时间
     # if args.utc_start:

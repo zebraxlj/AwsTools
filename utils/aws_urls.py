@@ -14,3 +14,10 @@ def get_lambda_function_url(region: str, function_name):
         # https://us-east-1.console.aws.amazon.com/lambda/home?region=us-east-1#/functions/PartyAnimals-EventTrackingFunction
         fn_url = f'https://{region}.console.aws.amazon.com/lambda/home?region={region}#/functions/{function_name}'
     return fn_url
+
+
+def get_s3_bucket_url(region: str, bucket_name: str) -> str:
+    if region.startswith('cn'):
+        return f'https://{region}.console.amazonaws.cn/s3/buckets/{bucket_name}?region={region}'
+    else:
+        return f'https://{region}.console.aws.amazon.com/s3/buckets/{bucket_name}?region={region}'

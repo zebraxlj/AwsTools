@@ -34,7 +34,7 @@ def download_dir_from_s3(env: Env, region: str, bucket_name: str, dir_key: str, 
 
 
 def download_file_from_s3(
-        env: Env, region: str, bucket_name: str, file_key: str, output_dir: str, output_file_name: str = None,
+        env: Env, region: str, bucket_name: str, file_key: str, output_dir: str, output_file_name: str = '',
 ) -> None:
     session = Session(region_name=region, profile_name=get_aws_profile(region, env.is_prod_aws))
     client = session.client('s3', config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}))

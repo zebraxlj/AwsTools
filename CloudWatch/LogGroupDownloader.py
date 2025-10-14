@@ -1,9 +1,11 @@
+import argparse
+import logging
 import os
 import sys
-import logging
-from datetime import datetime, timezone
 import time
-from typing import Optional
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import List, Optional, Tuple
 
 SCRIPT_DIR_PATH = os.path.dirname(os.path.abspath(__file__))
 PROJ_PATH = os.path.dirname(SCRIPT_DIR_PATH)
@@ -28,7 +30,73 @@ LOG_GROUP_NAME = '/aws/lambda/Audit2022-ConfigCenterFunction'
 S3_BUCKET_NAME_PREFIX = 'lambda-log-export'
 S3_PREFIX = ''
 DATA_DOWNLOAD_DIR = os.path.join(SCRIPT_DIR_PATH, 'Data/LogGroup')
+START_TS_MS = 0
+END_TS_MS = 0
 # endregion 配置项
+
+
+@dataclass
+class __CmdArgs:
+    environment_name: str
+    region: str
+    log_group_name: str
+    s3_bucket_name_prefix: Optional[str]
+    s3_prefix: Optional[str]
+    start_ts_ms: Optional[int]
+    end_ts_ms: Optional[int]
+
+
+def __parse_args(args: List[str]) -> __CmdArgs:
+    parser = argparse.ArgumentParser(
+        description='Download CloudWatch Log Group to S3'
+    )
+    parser.add_argument(
+        '--environment_name', '-en',
+        help='环境名',
+        default='',
+        required=True,
+    )
+    parser.add_argument(
+        '--region', '-rgn',
+        help='cloudwatch 地区',
+        default='',
+        required=True
+    )
+    parser.add_argument(
+        '--log_group_name', '-lg',
+        help='CloudWatch Log Group名称',
+        type=str,
+        required=True,
+    )
+    parser.add_argument(
+        '--s3_bucket_name_prefix', '-bp',
+        help=(
+            'S3 Bucket 前缀。因为 bucket 必须和 cloudwatch 地区相同，bucket 名又必须唯一，'
+            '实际 bucket 名会是 <s3_bucket_name_prefix>-<region>。例：lambda-log-export-cn-northwest-1'
+        ),
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        '--s3_prefix', '-sp',
+        type=str,
+        default='',
+        help='S3 保存路径前缀'
+    )
+    parser.add_argument(
+        '--start_ts_ms', '-st',
+        type=int,
+        default=None, required=False,
+        help='开始时间戳（毫秒）'
+    )
+    parser.add_argument(
+        '--end_ts_ms', '-et',
+        type=int,
+        default=None, required=False,
+        help='结束时间戳（毫秒）'
+    )
+    parsed_args = parser.parse_args(args)
+    return __CmdArgs(**vars(parsed_args))
 
 
 def create_s3_export_bucket_if_not_exists(region: str, env: Env, bucket_name: str):
@@ -85,7 +153,7 @@ def create_s3_export_bucket_if_not_exists(region: str, env: Env, bucket_name: st
 def export_log_group_to_s3(
         region: str, env: Env, log_group_name: str, s3_bucket_name: str, s3_prefix: Optional[str] = '',
         start_ts_ms: Optional[int] = None, end_ts_ms: Optional[int] = None
-) -> bool:
+) -> Tuple[bool, str]:
     """导出CloudWatch Log Group到S3
 
     Args:
@@ -97,7 +165,7 @@ def export_log_group_to_s3(
         start_ts_ms (int, optional): 开始时间戳（毫秒）Defaults to None.
         end_ts_ms (int, optional): 结束时间戳（毫秒）Defaults to None.
     Returns:
-        Tuple[bool, Optional[str], Optional[str]]: 导出任务是否成功, S3 Bucket名称, S3前缀
+        Tuple[bool, str]: 导出任务是否成功, export task_id
     """
     logging.info(
         f'Start log_group={log_group_name} s3_bucket={s3_bucket_name} s3_prefix={s3_prefix} '
@@ -119,7 +187,7 @@ def export_log_group_to_s3(
                 break
     if not log_group:
         logging.error(f'Log group not found. log_group_name={log_group_name} region={region}')
-        return False
+        return False, ''
 
     # 建导出任务
     ts_ms_now = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -144,7 +212,7 @@ def export_log_group_to_s3(
     task_id = resp_create_task.get('taskId', None)
     if not task_id:
         logging.error(f'Create export task failed. resp_create_task={resp_create_task}')
-        return False
+        return False, ''
 
     # 等待导出任务完成
     logging.debug(f'response={resp_create_task}, s3_bucket_url={get_s3_bucket_url(region, s3_bucket_name)}')
@@ -160,11 +228,22 @@ def export_log_group_to_s3(
             break
         logging.debug(f'Export task {task_id} is {task_status}')
         time.sleep(5)
-    return True
+    return True, task_id
 
 
 def main():
     logging.info(f'Start {__file__}')
+    global LOG_GROUP_NAME, S3_PREFIX, START_TS_MS, END_TS_MS
+
+    sys_argv: list = sys.argv[1:]
+    # sys_argv_str = f'-en {ENV.name} -rgn {REGION} -lg {LOG_GROUP_NAME} -bp {S3_BUCKET_NAME_PREFIX} -sp {S3_PREFIX}'
+    # sys_argv = sys_argv_str.split(' ')
+    cmd_args: __CmdArgs = __parse_args(sys_argv)
+
+    LOG_GROUP_NAME = cmd_args.log_group_name
+    S3_PREFIX = cmd_args.s3_prefix
+    START_TS_MS = cmd_args.start_ts_ms
+    END_TS_MS = cmd_args.end_ts_ms
 
     s3_bucket_name = f'{S3_BUCKET_NAME_PREFIX}-{REGION}'
 
@@ -174,22 +253,25 @@ def main():
     s3_prefix = S3_PREFIX if S3_PREFIX else [tkn for tkn in LOG_GROUP_NAME.split('/') if tkn][-1]
 
     # 导出 Log Group 到 S3
-    success = export_log_group_to_s3(
+    success, task_id = export_log_group_to_s3(
         region=REGION,
         env=ENV,
         log_group_name=LOG_GROUP_NAME,
         s3_bucket_name=s3_bucket_name,
         s3_prefix=s3_prefix,
+        start_ts_ms=START_TS_MS,
+        end_ts_ms=END_TS_MS,
     )
     if not success:
         return
 
+    dir_key = f'{s3_prefix}/{task_id}'
     download_dir_from_s3(
         env=ENV,
         region=REGION,
         bucket_name=s3_bucket_name,
-        dir_key=s3_prefix,
-        output_path=f'{DATA_DOWNLOAD_DIR}/{s3_prefix}',
+        dir_key=dir_key,
+        output_path=f'{DATA_DOWNLOAD_DIR}/{dir_key}',
     )
 
 

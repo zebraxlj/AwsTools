@@ -1,3 +1,4 @@
+import logging
 import os
 from boto3.session import Session
 from botocore.client import Config as BotoConfig
@@ -31,6 +32,8 @@ def download_dir_from_s3(env: Env, region: str, bucket_name: str, dir_key: str, 
 
             # Download the file
             client.download_file(bucket_name, relative_path, local_path)
+        logging.info(f'Completed page with {len(page["Contents"])} files')
+    logging.info(f'Download Completed. output_path={output_path}')
 
 
 def download_file_from_s3(

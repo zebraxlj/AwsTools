@@ -1,5 +1,10 @@
 from dataclasses import dataclass
 
+ACCT_DEV_CN = ''
+ACCT_DEV_US = ''
+ACCT_PROD_CN = ''
+ACCT_PROD_US = ''
+
 
 @dataclass
 class Env:

@@ -289,13 +289,12 @@ def main():
     if not success:
         return
 
-    dir_key = f'{s3_prefix}/{task_id}'
     download_dir_from_s3(
         env=ENV,
         region=REGION,
         bucket_name=s3_bucket_name,
-        dir_key=dir_key,
-        output_path=f'{DATA_DOWNLOAD_DIR}/{dir_key}',
+        dir_key=f'{s3_prefix}/{task_id}',
+        output_path=f'{DATA_DOWNLOAD_DIR}/{s3_prefix}/{REGION}/{task_id}',
     )
 
 

@@ -13,9 +13,9 @@ if PROJ_PATH not in sys.path:
     sys.path.insert(0, PROJ_PATH)
 
 from S3.s3_downloader import download_dir_from_s3  # noqa: E402
-from S3.s3_helper import is_bucket_exists  # noqa: E402
+from S3.s3_helper import get_s3_client, is_bucket_exists, update_bucket_policy_if_needed  # noqa: E402
 from cloud_watch_helper import get_log_client  # noqa: E402
-from utils.aws_consts import AllEnvs, Env  # noqa: E402
+from utils.aws_consts import ACCT_DEV_CN, ACCT_DEV_US, ACCT_PROD_CN, ACCT_PROD_US, AllEnvs, Env  # noqa: E402
 from utils.aws_urls import get_s3_bucket_url  # noqa: E402
 from utils.logging_helper import setup_logging  # noqa: E402
 
@@ -99,12 +99,13 @@ def __parse_args(args: List[str]) -> __CmdArgs:
     return __CmdArgs(**vars(parsed_args))
 
 
-def create_s3_export_bucket_if_not_exists(region: str, env: Env, bucket_name: str):
+def create_s3_export_bucket_if_not_exists(env: Env, region: str, bucket_name: str):
     policy_str = '''
 {
     "Version": "2012-10-17",
     "Statement": [
         {
+            "Sid": "AllowGetBucketAclForLogsService",
             "Effect": "Allow",
             "Principal": {
                 "Service": "{#service}"
@@ -113,6 +114,7 @@ def create_s3_export_bucket_if_not_exists(region: str, env: Env, bucket_name: st
             "Resource": "{#resource_root}"
         },
         {
+            "Sid": "AllowPutObjectForLogsService",
             "Effect": "Allow",
             "Principal": {
                 "Service": "{#service}"
@@ -121,7 +123,11 @@ def create_s3_export_bucket_if_not_exists(region: str, env: Env, bucket_name: st
             "Resource": "{#resource_root}/*",
             "Condition": {
                 "StringEquals": {
-                    "s3:x-amz-acl": "bucket-owner-full-control"
+                    "s3:x-amz-acl": "bucket-owner-full-control",
+                    "aws:SourceAccount": "{#aws_acct_id}"
+                },
+                "ArnLike": {
+                    "aws:SourceArn": "{#source_arn}"
                 }
             }
         }
@@ -131,23 +137,39 @@ def create_s3_export_bucket_if_not_exists(region: str, env: Env, bucket_name: st
     if region.startswith('cn'):
         service = f'logs.{region}.amazonaws.com.cn'
         resource_root = f'arn:aws-cn:s3:::{bucket_name}'
+        aws_acct_id = ACCT_PROD_CN if env.is_prod_aws else ACCT_DEV_CN
+        source_arn = f'arn:aws-cn:logs:{region}:{aws_acct_id}:*'
     else:
         service = f'logs.{region}.amazonaws.com'
         resource_root = f'arn:aws:s3:::{bucket_name}'
+        aws_acct_id = ACCT_PROD_US if env.is_prod_aws else ACCT_DEV_US
+        source_arn = f'arn:aws:logs:{region}:{aws_acct_id}:*'
+
     policy_str = policy_str.replace('{#service}', service)
     policy_str = policy_str.replace('{#resource_root}', resource_root)
+    policy_str = policy_str.replace('{#aws_acct_id}', aws_acct_id)
+    policy_str = policy_str.replace('{#source_arn}', source_arn)
+    # 检查 policy 是否有未替换的占位符
+    if '"{#' in policy_str:
+        logging.error(f'policy_str 有为替换完的占位符：{policy_str}')
+        return False
 
     if not is_bucket_exists(region=region, env=env, bucket_name=bucket_name):
         logging.info(f'Createing bucket {bucket_name}')
-        client = get_log_client(rgn=region, env=env)
-        response = client.create_bucket(
+        client = get_s3_client(rgn=region, env=env)
+        resp_create_bucket = client.create_bucket(
             Bucket=bucket_name,
             CreateBucketConfiguration={
                 'LocationConstraint': region,
             },
-            Policy=policy_str,
         )
-        logging.debug(f'response={response}')
+        logging.info(f'Bucket created. response={resp_create_bucket}')
+
+    success = update_bucket_policy_if_needed(env=env, rgn=region, bucket_name=bucket_name, policy=policy_str)
+    if not success:
+        return False
+
+    return True
 
 
 def export_log_group_to_s3(
@@ -248,7 +270,9 @@ def main():
     s3_bucket_name = f'{S3_BUCKET_NAME_PREFIX}-{REGION}'
 
     # 创建 S3 Bucket
-    create_s3_export_bucket_if_not_exists(region=REGION, env=ENV, bucket_name=s3_bucket_name)
+    success = create_s3_export_bucket_if_not_exists(env=ENV, region=REGION, bucket_name=s3_bucket_name)
+    if not success:
+        return
 
     s3_prefix = S3_PREFIX if S3_PREFIX else [tkn for tkn in LOG_GROUP_NAME.split('/') if tkn][-1]
 

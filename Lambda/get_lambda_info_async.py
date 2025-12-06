@@ -6,7 +6,6 @@ from datetime import datetime
 from multiprocessing import Pool
 from typing import Dict, List, Tuple
 
-from aiobotocore.session import AioSession
 from botocore.client import Config as BotoConfig
 from botocore.exceptions import ClientError
 
@@ -16,8 +15,8 @@ os.chdir('..')
 sys.path.append(os.getcwd())
 
 from Lambda.lambda_info_types import Function, FunctionRow, FunctionTable  # noqa: E402
-from utils.aws_client_helper import get_aws_profile  # noqa: E402
 from utils.aws_consts import AllEnvs, Env  # noqa: E402
+from utils.aws_aiosession_helper import get_cached_aiosession  # noqa: E402
 from utils.aws_urls import get_lambda_function_url  # noqa: E402
 
 # region 配置项
@@ -31,15 +30,6 @@ REGIONS = [
 # endregion 配置项
 
 DT_FMT = '%Y-%m-%d %H:%M:%S'
-_SESSION_CACHE: Dict[str, AioSession] = {}  # Cache for sessions
-
-
-def get_cached_session(region: str, env: Env) -> AioSession:
-    key = f"{region}:{env.is_prod_aws}"
-    if key not in _SESSION_CACHE:
-        profile = get_aws_profile(region, env.is_prod_aws)
-        _SESSION_CACHE[key] = AioSession(profile=profile)
-    return _SESSION_CACHE[key]
 
 
 async def get_env_rgn_functions_async(env: Env, region: str, verbose: bool = False) -> Dict[str, dict]:
@@ -55,7 +45,7 @@ async def get_env_rgn_functions_async(env: Env, region: str, verbose: bool = Fal
     if verbose:
         dt_start = datetime.now()
         print(f'{dt_start.strftime(DT_FMT)} >> Get functions for region start. region={region}')
-    session = get_cached_session(region=region, env=env)
+    session = get_cached_aiosession(region=region, is_prod=env.is_prod_aws)
     async with session.create_client(
         'lambda',
         region_name=region,
@@ -109,7 +99,7 @@ async def get_all_function_concurrency(env: Env, fn_list: List[Function]) -> Dic
         region_groups.setdefault(fn.get_region(), []).append(fn)
 
     async def fetch_for_region(region: str, fn_group: List[Function]):
-        session = get_cached_session(region=region, env=env)
+        session = get_cached_aiosession(region=region, is_prod=env.is_prod_aws)
         async with session.create_client(
             'lambda',
             region_name=region,
@@ -137,7 +127,7 @@ async def get_all_function_concurrency(env: Env, fn_list: List[Function]) -> Dic
 
 
 async def get_function_currency_async(env: Env, region: str, function_name: str) -> dict:
-    session = get_cached_session(region=region, env=env)
+    session = get_cached_aiosession(region=region, is_prod=env.is_prod_aws)
     async with session.create_client(
         'lambda',
         region_name=region,

@@ -26,7 +26,7 @@ PartyAnimals--159490-StoreFunction
 LOG_GROUP_NAMES = [
     name.strip() for name in
     '''
-    PartyAnimals--160950-LoginFunction
+    NemoDev-trunk--47607-LoginFunction
     '''.split('\n')
     if name.strip()
 ]
@@ -36,8 +36,10 @@ REGIONS = [
     # 'eu-central-1',
     # 'us-east-1',
     ]
-DT_START_UTC = None
-DT_END_UTC = None
+# DT_START_UTC = None
+# DT_END_UTC = None
+DT_START_UTC = datetime(2025, 10, 1)
+DT_END_UTC = datetime.utcnow()
 # DT_START_UTC = datetime(2025, 3, 27)
 # DT_END_UTC = datetime(2025, 4, 3)
 ASCENDING = True  # filter_log_events 不支持排序，且默认顺序。当需要倒叙时，要用 describe_log_streams 倒叙获取日志
@@ -72,7 +74,7 @@ FIND_FIRST = False
 # PATTERN = r'ERROR check_app_ownership missing ownersteamid'  #           NX:0       JP: EU: US:
 # PATTERN = r'ERROR check_app_ownership code header body'  #               NX:42      JP: EU: US:
 
-PATTERN = r'Steam Changed ErrCode code'
+PATTERN = r'IdName code resp'
 
 # endregion 脚本运行配置
 
@@ -323,7 +325,7 @@ def test():
 if __name__ == '__main__':
     # sys.argv += ['--find-first']
     # main(is_run_parallel=True)
-    main(is_run_parallel=False)
+    main(is_run_parallel=True)
 
     # from cloud_watch_helper import describe_log_streams_all
     # log_streams_all = describe_log_streams_all('cn-northwest-1', 'PartyAnimals--159490-StoreFunction')

@@ -1,10 +1,11 @@
+import os
 import sys
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, TypeVar
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 from utils.ColorHelper.color_xterm_256 import ColorXTerm256
 
@@ -20,8 +21,8 @@ class ColumnAlignment(str, Enum):
 
 @dataclass
 class FontFormat:
-    BgColor: ColorXTerm256 = None
-    FgColor: ColorXTerm256 = None
+    BgColor: ColorXTerm256 = ColorXTerm256.WHITE
+    FgColor: ColorXTerm256 = ColorXTerm256.BLACK
 
     def apply_format(self, text: str) -> str:
         if isinstance(self.BgColor, ColorXTerm256):
@@ -37,18 +38,18 @@ class ConditionalFormat:
         default_factory=lambda: FontFormat(BgColor=ColorXTerm256.RED, FgColor=ColorXTerm256.WHITE)
     )
 
-    def apply_format(self, text: any) -> str:
+    def apply_format(self, text: Any) -> str:
         raise NotImplementedError
 
-    def is_condition_match(self, text: any) -> bool:
+    def is_condition_match(self, text: Any) -> bool:
         raise NotImplementedError
 
 
 @dataclass
 class CondFmtContain(ConditionalFormat):
-    contain_target: str = None
+    contain_target: Any = None
 
-    def apply_format(self, text: any) -> str:
+    def apply_format(self, text: Any) -> str:
         return self.format.apply_format(str(text))
         text = str(text)
         return f"\033[;48;5;{ColorXTerm256.RED}m{text}\033[0m"
@@ -64,9 +65,9 @@ class CondFmtContain(ConditionalFormat):
 
 @dataclass
 class CondFmtExactMatch(ConditionalFormat):
-    match_target: any = None
+    match_target: Any = None
 
-    def apply_format(self, text: any) -> str:
+    def apply_format(self, text: Any) -> str:
         return self.format.apply_format(text)
         text = str(text)
         len_space_l = text.index(self.match_target)
@@ -77,9 +78,6 @@ class CondFmtExactMatch(ConditionalFormat):
         if self.match_target is None:
             raise ValueError('match_target is not defined')
         return text == str(self.match_target)
-
-
-TConditionalFormat = TypeVar('TConditionalFormat', bound=ConditionalFormat)
 
 
 @dataclass
@@ -95,7 +93,7 @@ class ColumnConfig:
 
     align: Optional[ColumnAlignment] = ColumnAlignment.CENTER
 
-    conditional_format: Optional[TConditionalFormat] = None
+    conditional_format: Optional[ConditionalFormat] = None
 
     format: Optional[str] = None
 
@@ -111,50 +109,50 @@ class BaseRow:
     3. Provide column config: type: ColumnConfig
         Ex: __Col1_config: Final[ColumnConfig] = ColumnConfig(alias="Column1")
     """
-    __CONFIG_PREFIX: str = None
-    __CONFIG_SUFFIX: str = '_config'
+    _CONFIG_PREFIX: str = ''
+    _CONFIG_SUFFIX: str = '_config'
 
-    __COL_ATTR_NAMES: List[str] = None
-    __COL_HEADER_DISP_LEN_MAP: Dict[str, int] = None
-    __COL_HEADER_LEN_MAP: Dict[str, int] = None
-    __COL_HEADER_MAP: Dict[str, str] = None
+    _COL_ATTR_NAMES: List[str] = field(default_factory=lambda: [])
+    _COL_HEADER_DISP_LEN_MAP: Dict[str, int] = field(default_factory=lambda: {})
+    _COL_HEADER_LEN_MAP: Dict[str, int] = field(default_factory=lambda: {})
+    _COL_HEADER_MAP: Dict[str, str] = field(default_factory=lambda: {})
 
     @classmethod
     def __GET_CONFIG_PREFIX(cls):
-        if cls.__CONFIG_PREFIX is None:
-            cls.__CONFIG_PREFIX = f'_{cls.__name__}__'
-        return cls.__CONFIG_PREFIX
+        if not cls._CONFIG_PREFIX:
+            cls._CONFIG_PREFIX = f'_{cls.__name__}__'
+        return cls._CONFIG_PREFIX
 
     @classmethod
     def __GET_CONFIG_SUFFIX(cls):
-        return cls.__CONFIG_SUFFIX
+        return cls._CONFIG_SUFFIX
 
     @classmethod
     def __init_class_col_attributes(cls) -> None:
-        cls.__COL_ATTR_NAMES = [
+        cls._COL_ATTR_NAMES = [
             attr for attr in cls.__annotations__
             if not attr.startswith('__') and cls._is_col_data_attr(attr) and not cls._is_col_hidden(attr)
         ]
         # filter out href and url attributes if current environment can display href with name column
         if can_display_href():
             href_attr_to_remove = [
-                attr for attr in cls.__COL_ATTR_NAMES
+                attr for attr in cls._COL_ATTR_NAMES
                 if (
                     can_display_href()
                     and (cls._is_col_href_attr(attr) or cls._is_col_url_attr(attr))
                     and cls._is_col_href_attr_with_base_col(attr)
                 )
             ]
-            cls.__COL_ATTR_NAMES = [attr for attr in cls.__COL_ATTR_NAMES if attr not in href_attr_to_remove]
-        cls.__COL_HEADER_DISP_LEN_MAP = dict()
-        cls.__COL_HEADER_LEN_MAP = dict()
-        cls.__COL_HEADER_MAP = dict()
-        for attr_name in cls.__COL_ATTR_NAMES:
+            cls._COL_ATTR_NAMES = [attr for attr in cls._COL_ATTR_NAMES if attr not in href_attr_to_remove]
+        cls._COL_HEADER_DISP_LEN_MAP = dict()
+        cls._COL_HEADER_LEN_MAP = dict()
+        cls._COL_HEADER_MAP = dict()
+        for attr_name in cls._COL_ATTR_NAMES:
             col_config: ColumnConfig = cls.get_config(attr_name)
             col_header = col_config.alias if col_config.alias else attr_name
-            cls.__COL_HEADER_DISP_LEN_MAP[attr_name] = get_display_ansi_width(col_header)
-            cls.__COL_HEADER_LEN_MAP[attr_name] = len(col_header)
-            cls.__COL_HEADER_MAP[attr_name] = col_header
+            cls._COL_HEADER_DISP_LEN_MAP[attr_name] = get_display_ansi_width(col_header)
+            cls._COL_HEADER_LEN_MAP[attr_name] = len(col_header)
+            cls._COL_HEADER_MAP[attr_name] = col_header
 
     @classmethod
     def _get_config_attr_name(cls, col_name: str) -> str:
@@ -230,7 +228,7 @@ class BaseRow:
             base_col_attr = attr_name[:-len('_url')]
         else:
             raise NotImplementedError(f'attr_name={attr_name} is not supported')
-        if base_col_attr in cls.__COL_ATTR_NAMES:
+        if base_col_attr in cls._COL_ATTR_NAMES:
             return True
         return False
 
@@ -269,9 +267,9 @@ class BaseRow:
     @classmethod
     def get_col_attr_names(cls) -> List[str]:
         """ return the list of all column attribute names (no config, just attribute names) """
-        if cls.__COL_ATTR_NAMES is None:
+        if cls._COL_ATTR_NAMES is None:
             cls.__init_class_col_attributes()
-        return cls.__COL_ATTR_NAMES
+        return cls._COL_ATTR_NAMES
 
     @classmethod
     def get_col_header_disp_len_map(cls) -> Dict[str, int]:
@@ -279,9 +277,9 @@ class BaseRow:
         Returns:
             Dict[str, int]: key: column_attribute_name; value: column header display length
         """
-        if cls.__COL_HEADER_DISP_LEN_MAP is None:
+        if cls._COL_HEADER_DISP_LEN_MAP is None:
             cls.__init_class_col_attributes()
-        return cls.__COL_HEADER_DISP_LEN_MAP
+        return cls._COL_HEADER_DISP_LEN_MAP
 
     @classmethod
     def get_col_header_map(cls) -> Dict[str, str]:
@@ -289,9 +287,9 @@ class BaseRow:
         Returns:
             Dict[str, str]: key: column_attribute_name; value: column alias name if defined else column_attribute_name
         """
-        if cls.__COL_HEADER_MAP is None:
+        if cls._COL_HEADER_MAP is None:
             cls.__init_class_col_attributes()
-        return cls.__COL_HEADER_MAP
+        return cls._COL_HEADER_MAP
 
     def get_col_value_disp(self) -> Dict[str, str]:
         """ return the map between column attribute name and column formatted content that's displayed
@@ -353,9 +351,9 @@ class BaseRow:
                 key: column_attribute_name;
                 value: length of column alias if defined else column_attribute_name
         """
-        if cls.__COL_HEADER_LEN_MAP is None:
+        if cls._COL_HEADER_LEN_MAP is None:
             cls.__init_class_col_attributes()
-        return cls.__COL_HEADER_LEN_MAP
+        return cls._COL_HEADER_LEN_MAP
 
     def get_col_value_len(self) -> Dict[str, int]:
         """ return the map between column attribute name and column value length
@@ -400,8 +398,8 @@ class BaseRow:
 TBaseRow = TypeVar('TBaseRow', bound=BaseRow)
 
 
-class BaseTable:
-    row_type: TBaseRow = BaseRow
+class BaseTable(Generic[TBaseRow]):
+    row_type: type[TBaseRow]
     CHAR_LN: str = '\r\n'
     CHAR_COL_SEP: str = '\u2502'
     CHAR_ROW_SEP: str = '\u2500'
@@ -440,7 +438,7 @@ class BaseTable:
         for col, val_len in row_data.get_col_value_len().items():
             self.__COL_MAX_LEN[col] = max(self.__COL_MAX_LEN[col], val_len)
 
-    def get_sorted_rows(self, order_by: List[str], ascending: List[bool] = None) -> List[TBaseRow]:
+    def get_sorted_rows(self, order_by: List[str], ascending: List[bool] = field(default_factory=lambda: [])) -> List[TBaseRow]:
         """ return the sorted row list of the current table
         Args:
             order_by (List[str]):
@@ -511,7 +509,7 @@ class BaseTable:
         )
         return ret
 
-    def get_table_header_sep_str(self, sep_h: str = None, sep_v: str = None) -> str:
+    def get_table_header_sep_str(self, sep_h: str = '', sep_v: str = '') -> str:
         """ generate the header separator line for the output table
         Args:
             sep_h (str, optional): horrizontal separater
@@ -523,11 +521,11 @@ class BaseTable:
         sep_v = sep_v if sep_v else self.CHAR_HEADER_V_SEP
         return self.get_table_line_sep_str(sep_h=sep_h, sep_v=sep_v)
 
-    def get_table_line_sep_str(self, sep_h: str = None, sep_v: str = None, dense: bool = True) -> str:
+    def get_table_line_sep_str(self, sep_h: str = '', sep_v: str = '', dense: bool = True) -> str:
         """ generate row separator line for the output table
         Args:
-            sep_h (str, optional): horrizontal separater. Defaults to None.
-            sep_v (str, optional): vertical separater. Defaults to None.
+            sep_h (str, optional): horrizontal separater. Defaults to empty.
+            sep_v (str, optional): vertical separater. Defaults to empty.
             dense (bool, optional):
                 When True there'll be no space between row sep_h and column sep_v Ex. ----|----.
                 When False there'll be a space between row sep_h and column sep_v Ex. --- | ---.
@@ -562,9 +560,6 @@ class BaseTable:
             text_disp, text_print = col_data_disp[attr_name], col_data_true[attr_name]
             config: ColumnConfig = col_config[attr_name]
             width = col_disp_len[attr_name]
-            need_conf_fmt = (
-                config.conditional_format is not None and config.conditional_format.is_condition_match(text_disp)
-            )
 
             text_disp_old = text_disp
             # 1 wide char takes 2 ansi space, and the width is in ansi space, so padding space need to be recalculated
@@ -572,7 +567,9 @@ class BaseTable:
             text_disp = f' {str(text_disp):{config.align}{width}} '
             text_disp = text_disp.replace(text_disp_old, text_print)
 
-            if need_conf_fmt:
+            if (
+                config.conditional_format is not None and config.conditional_format.is_condition_match(text_disp)
+            ):
                 text_disp = config.conditional_format.apply_format(text_disp)
             token_dict[attr_name] = text_disp
         tokens = [token_dict[attr_name] for attr_name in col_order]
@@ -585,7 +582,7 @@ class BaseTable:
         self.row_list.append(row_data)
         self._update_col_max_disp_len(row_data=row_data)
 
-    def print_table(self, order_by: List[str] = None, ascending: List[bool] = None):
+    def print_table(self, order_by: List[str] = [], ascending: List[bool] = []):
         """print the table
         Args:
             order_by (List[str], optional): see order_by in get_sorted_rows
@@ -609,6 +606,8 @@ def can_display_href() -> bool:
         bool: True if href is supported
     """
     if sys.platform == 'win32':
+        if 'WT_SESSION' in os.environ:
+            return True
         # powershell 不支持
         return False
     elif sys.platform == 'linux':

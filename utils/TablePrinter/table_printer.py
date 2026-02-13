@@ -45,6 +45,9 @@ class ConditionalFormat:
         raise NotImplementedError
 
 
+COND_FMT_DEFAULT = ConditionalFormat()
+
+
 @dataclass
 class CondFmtContain(ConditionalFormat):
     contain_target: Any = None
@@ -91,9 +94,9 @@ class ColumnConfig:
     """
     alias: Optional[str] = None
 
-    align: Optional[ColumnAlignment] = ColumnAlignment.CENTER
+    align: ColumnAlignment = ColumnAlignment.CENTER
 
-    conditional_format: Optional[ConditionalFormat] = None
+    conditional_format: ConditionalFormat = field(default_factory=lambda: COND_FMT_DEFAULT)
 
     format: Optional[str] = None
 
@@ -311,7 +314,7 @@ class BaseRow:
         return ret
 
     def get_col_value_true(self) -> Dict[str, str]:
-        """ return the map between column attribute name and column content that's printed to the terminal, including 
+        """ return the map between column attribute name and column content that's printed to the terminal, including
         hidden content such as href
 
         Returns:
@@ -439,7 +442,9 @@ class BaseTable(Generic[TBaseRow]):
         for col, val_len in row_data.get_col_value_len().items():
             self.__COL_MAX_LEN[col] = max(self.__COL_MAX_LEN[col], val_len)
 
-    def get_sorted_rows(self, order_by: List[str], ascending: List[bool] = field(default_factory=lambda: [])) -> List[TBaseRow]:
+    def get_sorted_rows(
+            self, order_by: List[str], ascending: List[bool] = field(default_factory=lambda: [])
+            ) -> List[TBaseRow]:
         """ return the sorted row list of the current table
         Args:
             order_by (List[str]):
@@ -561,6 +566,11 @@ class BaseTable(Generic[TBaseRow]):
             text_disp, text_print = col_data_disp[attr_name], col_data_true[attr_name]
             config: ColumnConfig = col_config[attr_name]
             width = col_disp_len[attr_name]
+            need_conf_fmt = (
+                config.conditional_format is not None
+                and config.conditional_format != COND_FMT_DEFAULT
+                and config.conditional_format.is_condition_match(text_disp)
+            )
 
             text_disp_old = text_disp
             # 1 wide char takes 2 ansi space, and the width is in ansi space, so padding space need to be recalculated
@@ -568,9 +578,7 @@ class BaseTable(Generic[TBaseRow]):
             text_disp = f' {str(text_disp):{config.align}{width}} '
             text_disp = text_disp.replace(text_disp_old, text_print)
 
-            if (
-                config.conditional_format is not None and config.conditional_format.is_condition_match(text_disp)
-            ):
+            if need_conf_fmt:
                 text_disp = config.conditional_format.apply_format(text_disp)
             token_dict[attr_name] = text_disp
         tokens = [token_dict[attr_name] for attr_name in col_order]

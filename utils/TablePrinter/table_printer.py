@@ -112,10 +112,11 @@ class BaseRow:
     _CONFIG_PREFIX: str = ''
     _CONFIG_SUFFIX: str = '_config'
 
-    _COL_ATTR_NAMES: List[str] = field(default_factory=lambda: [])
-    _COL_HEADER_DISP_LEN_MAP: Dict[str, int] = field(default_factory=lambda: {})
-    _COL_HEADER_LEN_MAP: Dict[str, int] = field(default_factory=lambda: {})
-    _COL_HEADER_MAP: Dict[str, str] = field(default_factory=lambda: {})
+    # 不能用 dataclass 的 field，因为 dataclass 会加 _BaseRow_ 前缀，导致用的时候找不到 class 变量
+    _COL_ATTR_NAMES: Optional[List[str]] = None
+    _COL_HEADER_DISP_LEN_MAP: Optional[Dict[str, int]] = None
+    _COL_HEADER_LEN_MAP: Optional[Dict[str, int]] = None
+    _COL_HEADER_MAP: Optional[Dict[str, str]] = None
 
     @classmethod
     def __GET_CONFIG_PREFIX(cls):
@@ -228,7 +229,7 @@ class BaseRow:
             base_col_attr = attr_name[:-len('_url')]
         else:
             raise NotImplementedError(f'attr_name={attr_name} is not supported')
-        if base_col_attr in cls._COL_ATTR_NAMES:
+        if cls._COL_ATTR_NAMES and base_col_attr in cls._COL_ATTR_NAMES:
             return True
         return False
 
@@ -269,7 +270,7 @@ class BaseRow:
         """ return the list of all column attribute names (no config, just attribute names) """
         if cls._COL_ATTR_NAMES is None:
             cls.__init_class_col_attributes()
-        return cls._COL_ATTR_NAMES
+        return cls._COL_ATTR_NAMES or []
 
     @classmethod
     def get_col_header_disp_len_map(cls) -> Dict[str, int]:
@@ -279,7 +280,7 @@ class BaseRow:
         """
         if cls._COL_HEADER_DISP_LEN_MAP is None:
             cls.__init_class_col_attributes()
-        return cls._COL_HEADER_DISP_LEN_MAP
+        return cls._COL_HEADER_DISP_LEN_MAP or {}
 
     @classmethod
     def get_col_header_map(cls) -> Dict[str, str]:
@@ -289,7 +290,7 @@ class BaseRow:
         """
         if cls._COL_HEADER_MAP is None:
             cls.__init_class_col_attributes()
-        return cls._COL_HEADER_MAP
+        return cls._COL_HEADER_MAP or {}
 
     def get_col_value_disp(self) -> Dict[str, str]:
         """ return the map between column attribute name and column formatted content that's displayed
@@ -353,7 +354,7 @@ class BaseRow:
         """
         if cls._COL_HEADER_LEN_MAP is None:
             cls.__init_class_col_attributes()
-        return cls._COL_HEADER_LEN_MAP
+        return cls._COL_HEADER_LEN_MAP or {}
 
     def get_col_value_len(self) -> Dict[str, int]:
         """ return the map between column attribute name and column value length

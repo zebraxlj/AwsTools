@@ -103,7 +103,7 @@ class LogBlockInfo:
     def parse_request_uri(self) -> None:
         """ 解析 RequestUri，提取 AWS Region、Lambda 名称、Lambda 环境等信息 """
         if self._RequestUri and self.is_lambda_request():
-            tmp_url = self._RequestUri.strip().replace('https://', '').replace('http://', '')
+            tmp_url = self._RequestUri.strip().replace('https://', '').replace('http://', '').replace('cdn.', '')
             domains = tmp_url.split('/')[0]
             domain_tkns = domains.split('.')
             lambda_env = AllEnvs.get_env_by_name(domain_tkns[1])

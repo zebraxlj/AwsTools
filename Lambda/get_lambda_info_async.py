@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import os
 import string
@@ -9,13 +10,13 @@ from typing import Dict, List, Tuple
 from botocore.client import Config as BotoConfig
 from botocore.exceptions import ClientError
 
-CURR_FOLDER_NAME = os.path.basename(os.path.dirname(os.path.abspath(__file__)))
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-os.chdir('..')
-sys.path.append(os.getcwd())
+CURR_DIR_PATH = os.path.dirname(os.path.abspath(__file__))
+PROJ_ROOT_PATH = os.path.dirname(CURR_DIR_PATH)
+if PROJ_ROOT_PATH not in sys.path:
+    sys.path.append(PROJ_ROOT_PATH)
 
 from Lambda.lambda_info_types import Function, FunctionRow, FunctionTable  # noqa: E402
-from utils.aws_consts import AllEnvs, Env  # noqa: E402
+from utils.aws_consts import REGION_ABBR, AllEnvs, Env  # noqa: E402
 from utils.aws_aiosession_helper import get_cached_aiosession  # noqa: E402
 from utils.aws_urls import get_lambda_function_url  # noqa: E402
 
@@ -221,11 +222,54 @@ def main_coroutine_sync():
 
 
 def main_multiprocess():
+    load_global_vars()
+
     results: List[Dict[str, Tuple[Function, dict]]]
     with Pool(processes=len(REGIONS)) as pool:
         results = pool.map(region_function_task, REGIONS)
     fn_fn_ccy = [elem for result in results for elem in result.values()]  # Flatten the list of dicts
     handle_function_n_ccy(fn_fn_ccy)
+
+
+def load_global_vars():
+    global ENV, SUB_ENV, REGIONS
+
+    sys_args = sys.argv[1:]
+    if os.environ.get('TERM_PROGRAM', None) == 'vscode':
+        print('VsCode 本地调试')
+        sys_args = ['-en', 'NemoDev-maprefine', '-sen', '76700', '-rgn', 'NX', 'AP', 'US', 'EU']
+
+    args = parse_args(sys_args)
+
+    # Lambda 地区
+    arg_regions: List[str] = args.regions
+    arg_regions = sorted([REGION_ABBR.get(rgn, rgn) for rgn in arg_regions])
+    REGIONS = arg_regions
+    ENV = AllEnvs.get_env_by_name(args.environment_name)
+    SUB_ENV = args.sub_environment_name
+
+
+def parse_args(args: List[str]):
+    parser = argparse.ArgumentParser(
+        description='Get Lambda Function Concurrency'
+    )
+    parser.add_argument(
+        '--environment-name', '-en',
+        help='环境名',
+        default=ENV.name,
+    )
+    parser.add_argument(
+        '--sub-environment-name', '-sen',
+        help='子环境',
+        default=SUB_ENV,
+    )
+    parser.add_argument(
+        '--regions', '-rgn',
+        help='List of regions',
+        default=REGIONS,
+        nargs='+',
+    )
+    return parser.parse_args(args)
 
 
 if __name__ == '__main__':

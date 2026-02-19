@@ -258,8 +258,9 @@ def main():
     global LOG_GROUP_NAME, S3_PREFIX, START_TS_MS, END_TS_MS
 
     sys_argv: list = sys.argv[1:]
-    # sys_argv_str = f'-en {ENV.name} -rgn {REGION} -lg {LOG_GROUP_NAME} -bp {S3_BUCKET_NAME_PREFIX} -sp {S3_PREFIX}'
-    # sys_argv = sys_argv_str.split(' ')
+    if os.environ.get('TERM_PROGRAM', None) == 'vscode':
+        sys_argv_str = f'-en {ENV.name} -rgn {REGION} -lg {LOG_GROUP_NAME} -bp {S3_BUCKET_NAME_PREFIX} -sp {S3_PREFIX}'
+        sys_argv = sys_argv_str.split(' ')
     cmd_args: __CmdArgs = __parse_args(sys_argv)
 
     LOG_GROUP_NAME = cmd_args.log_group_name

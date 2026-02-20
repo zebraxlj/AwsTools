@@ -1,4 +1,5 @@
 import logging
+import sys
 import time
 
 # possible characters: ❱ ✎ ➜
@@ -19,13 +20,13 @@ class FormatterMs(logging.Formatter):
 
 
 def setup_logging(level=logging.DEBUG, is_show_logger_name: bool = False):
+    global FORMAT_LOG
     if is_show_logger_name:
-        global FORMAT_LOG
         FORMAT_LOG = FORMAT_LOG.replace('\t', '\t%(name)s ')
 
-    handler = logging.StreamHandler()
+    handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(FormatterMs(FORMAT_LOG, datefmt=r'%Y-%m-%dT%H:%M:%S.%f%z'))
-    logging.basicConfig(level=level, handlers=[handler])
+    logging.basicConfig(level=level, handlers=[handler], force=True)
 
     logging.getLogger('botocore').setLevel(logging.WARN)
     logging.getLogger('boto3').setLevel(logging.INFO)

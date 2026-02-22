@@ -28,7 +28,7 @@ class AllEnvs:
     @classmethod
     def get_env_by_name(cls, env_name) -> Env:
         for attr in cls.__dict__.values():
-            if isinstance(attr, Env) and attr.name == env_name:
+            if isinstance(attr, Env) and attr.name.lower() == env_name.lower():
                 return attr
         raise ValueError(f'Unknown environment={env_name}')
 

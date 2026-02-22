@@ -58,6 +58,7 @@ def filter_log_events(
         dt_start: Optional[datetime] = None, dt_end: Optional[datetime] = None,
         is_stop_on_match: bool = False,
         stop_event=None,
+        client=None,
         ) -> List[dict]:
     """从日志组获取所有
 
@@ -73,9 +74,9 @@ def filter_log_events(
         List[dict]: _description_
     """
     log_group_name = log_group_name if log_group_name.startswith('/aws/lambda/') else f'/aws/lambda/{log_group_name}'
-
-    env = AllEnvs.get_env_by_name(log_group_name.split('/')[-1].split('--')[0])
-    client = get_log_client(aws_region, env)
+    if client is None:
+        env = AllEnvs.get_env_by_name(log_group_name.split('/')[-1].split('--')[0])
+        client = get_log_client(aws_region, env)
 
     next_tkn = ''
     events_all: List[dict] = []

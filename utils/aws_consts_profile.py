@@ -1,3 +1,4 @@
+import platform
 from dataclasses import dataclass
 
 
@@ -18,3 +19,11 @@ PC_TO_PROFILE = {
     'DESKTOP-U6859CU': PROFILE_Samson,
     'SAMSON-G15': PROFILE_Samson,
 }
+
+
+def get_profiles_for_curr_pc():
+    pc_name = platform.node()
+    profile: AwsProfile = PC_TO_PROFILE.get(pc_name, None)
+    if profile is None:
+        raise KeyError(f'Need to set up the profile for your PC({pc_name})')
+    return profile

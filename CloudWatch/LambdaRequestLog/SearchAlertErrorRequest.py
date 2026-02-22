@@ -2,9 +2,10 @@ import csv
 import os
 import platform
 import re
+import inspect
 import sys
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, fields
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 __SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -65,7 +66,12 @@ def main():
             traceback_log = traceback.format_tb(e.__traceback__)
             traceback_list = list(reversed(traceback_log))
             print(''.join(traceback_list))
-    prod_alarm(ALERT_DETAIL)
+
+    alert_detail_lines = ALERT_DETAIL.strip().split('\n')
+    print('告警信息: -----------------------------------------------------')
+    print('\n'.join(alert_detail_lines[:min(8, len(alert_detail_lines))]), '\n', sep='')
+    alert_detail: AlertDetail = parse_alert_detail(ALERT_DETAIL)
+    handle_alert(alert_detail)
 
 
 # region HelperFunctions
@@ -77,10 +83,27 @@ FMT_DT_CONTENT_LEGACY = '%Y-%m-%d %H:%M:%S.%f'
 @dataclass
 class AlertDetail:
     alarm_dt_str: str
-    alarm_dt: datetime
     func_name: str
     rgn: str
-    log_group: str
+
+    @property
+    def alarm_dt(self) -> datetime:
+        return from_alert_dt_str(self.alarm_dt_str)
+
+    @property
+    def log_group(self) -> str:
+        return f'/aws/lambda/{self.func_name}'
+
+    def to_dict(self, include_properties: bool = True) -> dict:
+        data = {f.name: getattr(self, f.name) for f in fields(self)}
+        if include_properties:
+            for name, prop in inspect.getmembers(self.__class__, lambda v: isinstance(v, property)):
+                if name not in data:
+                    data[name] = getattr(self, name)
+        return data
+
+    def __str__(self):
+        return '\r\n'.join(['{', *[f'\t"{k}": "{v}"' for k, v in self.to_dict().items()], '}'])
 
 
 def get_pattern(pat, msg: str) -> Optional[str]:
@@ -130,14 +153,10 @@ def parse_alert_detail(alert_detail: str) -> AlertDetail:
     ]
     if missing:
         raise ValueError(f'Missing required fields: {", ".join(missing)}')
-    alarm_dt = from_alert_dt_str(alarm_dt_str)
-    log_group = f'/aws/lambda/{func_name}'
     return AlertDetail(
         alarm_dt_str=alarm_dt_str,
-        alarm_dt=alarm_dt,
         func_name=func_name,
         rgn=rgn,
-        log_group=log_group,
     )
 
 
@@ -145,6 +164,7 @@ def print_reason(reason: str):
     print('原因', '='*30)
     print(reason)
     print('=' * 33)
+
 
 def format_csv_datetime(dt: datetime) -> str:
     if dt.tzinfo is None:
@@ -164,124 +184,137 @@ def parse_csv_datetime(value: str) -> datetime:
         dt = datetime.strptime(value, FMT_DT_CONTENT_LEGACY)
         return dt.replace(tzinfo=timezone.utc)
 
-
 # endregion HelperFunctions
 
 
-def prod_alarm(detail: str):
-    from datetime import timedelta
+@dataclass
+class HandleAlertResult:
+    error_cnt: int
+    error_csv: str
+    full_cnt: int
+    full_csv: str
 
-    def get_error_logs():
-        alert: AlertDetail = parse_alert_detail(detail)
-        alert_dt: str = alert.alarm_dt_str
-        alert_rgn: str = alert.rgn
-        log_group: str = alert.log_group
-        fn_name = alert.func_name
-        print('告警信息: -----------------------------------------------------')
-        print(
-            f'时间: {alert_dt}\n'
-            f'地区: {alert_rgn}\n'
-            f'日志组: {log_group}\n'
+
+def handle_alert(
+        alert_detail: AlertDetail, dt_start: Optional[datetime] = None, dt_end: Optional[datetime] = None
+) -> HandleAlertResult:
+    alert_dt = alert_detail.alarm_dt
+    alert_rgn = alert_detail.rgn
+    fn_name = alert_detail.func_name
+    log_group = alert_detail.log_group
+
+    local_dt_end = dt_end if dt_end is not None else alert_dt
+    local_dt_start = dt_start if dt_start is not None else local_dt_end - timedelta(minutes=5)
+
+    print('搜索: ---------------------------------------------------------')
+    print(
+        f'日志组: {log_group}\n'
+        f'地区: {alert_rgn}\n'
+        f'开始时间：{local_dt_start}\n'
+        f'结束时间：{local_dt_end}\n'
+    )
+
+    env_name = fn_name.split('--')[0]
+    env: Env = AllEnvs.get_env_by_name(env_name)
+    client = get_log_client(alert_rgn, env)
+
+    events_all: List[dict] = filter_log_events(
+        aws_region=alert_rgn,
+        log_group_name=log_group,
+        pattern=r'%\[ERROR\]%',
+        dt_start=local_dt_start,
+        dt_end=local_dt_end,
+        client=client,
+    )
+    log_details_err: List[LogDetail] = extract_log_details(log_group, alert_rgn, events_all)
+
+    str_start = local_dt_start.strftime(FMT_DT_FILE)
+    str_end = local_dt_end.strftime(FMT_DT_FILE)
+
+    # 输出 Error 日志条目
+    error_file = os.path.join(
+        DATA_DIR,
+        f'{fn_name}_{alert_rgn}_{str_start}_{str_end}_ERROR.csv'
+    )
+    save_log_details_to_csv(error_file, log_details_err)
+
+    # print(f'Error 日志条目: ----------------------------------------------')
+    # for d in log_details:
+    #     print(f"{d.date_time}\t{d.message}\n{d.url}\n")
+
+    # 准备输出 Error 事件完整日志
+    id_set = set([d.id for d in log_details_err])
+    if not id_set:
+        print(f'请求 ID 集为空，没法获取完整日志')
+        return HandleAlertResult(
+            error_cnt=len(log_details_err),
+            error_csv=error_file,
+            full_cnt=0,
+            full_csv='',
         )
 
-        dt_end = alert.alarm_dt
-        dt_start = dt_end - timedelta(minutes=5)
+    log_details: List[LogDetail] = []
 
-        print('搜索: ---------------------------------------------------------')
-        print(
-            f'开始时间：{dt_start}\n'
-            f'结束时间：{dt_end}\n'
-        )
+    patterns = ['']
+    for rid in id_set:
+        rid_clean = re.escape(rid)
+        if not patterns[-1]:
+            patterns[-1] = rid_clean
+        elif len(patterns[-1] + f'|{rid_clean}') < 1024 - 2:
+            patterns[-1] += f'|{rid_clean}'
+        else:
+            patterns.append(rid_clean)
 
-        env_name = fn_name.split('--')[0]
-        env: Env = AllEnvs.get_env_by_name(env_name)
-        client = get_log_client(alert_rgn, env)
-
-        events_all: List[dict] = filter_log_events(
+    for p in patterns:
+        events = filter_log_events(
             aws_region=alert_rgn,
             log_group_name=log_group,
-            pattern=r'%\[ERROR\]%',
-            dt_start=dt_start,
-            dt_end=dt_end,
+            pattern=rf'%{p}%',
+            dt_start=local_dt_start,
+            dt_end=local_dt_end,
             client=client,
         )
-        log_details_err: List[LogDetail] = extract_log_details(log_group, alert_rgn, events_all)
+        log_details += extract_log_details(log_group, alert_rgn, events)  # noqa
 
-        str_start = dt_start.strftime(FMT_DT_FILE)
-        str_end = dt_end.strftime(FMT_DT_FILE)
+    log_details.sort(key=lambda x: x.date_time)
+    log_id_sorted = [d.id for d in log_details]
+    id_index = {log_id: idx for idx, log_id in enumerate(log_id_sorted)}
+    log_details.sort(key=lambda x: (id_index[x.id], x.date_time))
 
-        # 输出 Error 日志条目
-        file_name = os.path.join(
-            DATA_DIR,
-            f'{fn_name}_{alert_rgn}_{str_start}_{str_end}_ERROR.csv'
-        )
-        save_log_details_to_csv(file_name, log_details_err)
+    # 输出 Error 事件完整日志
+    full_file = os.path.join(DATA_DIR, f'{fn_name}_{alert_rgn}_{str_start}_{str_end}_FULL.csv')
+    save_log_details_to_csv(full_file, log_details)
+    result: HandleAlertResult = HandleAlertResult(
+        error_cnt=len(log_details_err),
+        error_csv=error_file,
+        full_cnt=len(log_details),
+        full_csv=full_file,
+    )
 
-        # print(f'Error 日志条目: ----------------------------------------------')
-        # for d in log_details:
-        #     print(f"{d.date_time}\t{d.message}\n{d.url}\n")
+    # print(f'Error 请求完整日志: -------------------------------------------')
+    # for d in log_details:
+    #     print(f"{d.date_time}\t{d.message}\n{d.url}\n")
 
-        # 准备输出 Error 事件完整日志
-        id_set = set([d.id for d in log_details_err])
-        if not id_set:
-            print(f'请求 ID 集为空，没法获取完整日志')
-            return
+    if False and get_profiles_for_curr_pc() == PROFILE_Samson:
+        from CloudWatch.LambdaRequestLog.AnalyzeAlertLog import check_config_center_steam_stability, \
+            check_login_affected_user, check_login, check_account_info, check_mission_system, \
+            check_store, check_matching
 
-        log_details: List[LogDetail] = []
+        if '-LoginFunction' in fn_name:
+            check_login_affected_user(log_details)
+            check_login(log_details)
+        if '-ConfigCenterFunction' in fn_name:
+            check_config_center_steam_stability(log_details_err)
+        if '-StoreFunction' in fn_name:
+            check_store(log_details)
+        if '-AccountInfoFunction' in fn_name:
+            check_account_info(log_details_err)
+        if '-MatchingFunction' in fn_name:
+            check_matching(log_details)
+        if '-MissionSystemFunction' in fn_name:
+            check_mission_system(log_details)
 
-        patterns = ['']
-        for rid in id_set:
-            rid_clean = re.escape(rid)
-            if not patterns[-1]:
-                patterns[-1] = rid_clean
-            elif len(patterns[-1] + f'|{rid_clean}') < 1024 - 2:
-                patterns[-1] += f'|{rid_clean}'
-            else:
-                patterns.append(rid_clean)
-
-        for p in patterns:
-            events = filter_log_events(
-                aws_region=alert_rgn,
-                log_group_name=log_group,
-                pattern=rf'%{p}%',
-                dt_start=dt_start,
-                dt_end=dt_end,
-                client=client,
-            )
-            log_details += extract_log_details(log_group, alert_rgn, events)  # noqa
-
-        log_details.sort(key=lambda x: x.date_time)
-        log_id_sorted = [d.id for d in log_details]
-        id_index = {log_id: idx for idx, log_id in enumerate(log_id_sorted)}
-        log_details.sort(key=lambda x: (id_index[x.id], x.date_time))
-
-        # 输出 Error 事件完整日志
-        file_name = os.path.join(DATA_DIR, f'{fn_name}_{alert_rgn}_{str_start}_{str_end}_FULL.csv')
-        save_log_details_to_csv(file_name, log_details)
-
-        # print(f'Error 请求完整日志: -------------------------------------------')
-        # for d in log_details:
-        #     print(f"{d.date_time}\t{d.message}\n{d.url}\n")
-
-        if False and get_profiles_for_curr_pc() == PROFILE_Samson:
-            from CloudWatch.LambdaRequestLog.AnalyzeAlertLog import check_config_center_steam_stability, \
-                check_login_affected_user, check_login, check_account_info, check_mission_system, \
-                check_store, check_matching
-            if '-LoginFunction' in fn_name:
-                check_login_affected_user(log_details)
-                check_login(log_details)
-            if '-ConfigCenterFunction' in fn_name:
-                check_config_center_steam_stability(log_details_err)
-            if '-StoreFunction' in fn_name:
-                check_store(log_details)
-            if '-AccountInfoFunction' in fn_name:
-                check_account_info(log_details_err)
-            if '-MatchingFunction' in fn_name:
-                check_matching(log_details)
-            if '-MissionSystemFunction' in fn_name:
-                check_mission_system(log_details)
-
-    get_error_logs()
+    return result
 
 
 # region 日志解析与保存

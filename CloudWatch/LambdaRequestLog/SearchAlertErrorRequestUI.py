@@ -6,79 +6,34 @@ import sys
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 __SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJ_PATH = os.path.dirname(os.path.dirname(__SCRIPT_DIR))
-if PROJ_PATH not in sys.path:
-    sys.path.insert(0, PROJ_PATH)
+__PROJ_DIR = os.path.dirname(os.path.dirname(__SCRIPT_DIR))
+if __PROJ_DIR not in sys.path:
+    sys.path.insert(0, __PROJ_DIR)
 
+from CloudWatch.cloud_watch_ui_helper import load_app_style
 from CloudWatch.LambdaRequestLog.SearchAlertErrorRequest import (  # noqa: E402
     AlertDetail, handle_alert, parse_alert_detail, HandleAlertResult
 )
 from utils.logging_helper import setup_logging  # noqa: E402
 
+SEARCH_QSS_PATH = os.path.join(__SCRIPT_DIR, "SearchAlertErrorRequest.qss")
 
-class MainWindow(QtWidgets.QWidget):
+
+def load_search_style() -> str:
+    try:
+        with open(SEARCH_QSS_PATH, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError as exc:
+        logging.error("Failed to load search style file: %s", exc)
+        return ""
+
+
+class SearchAlertErrorWidget(QtWidgets.QWidget):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("PaLogSearcher")
+        self.setWindowTitle("CloudWatch 错误告警日志搜索")
 
-        self.setStyleSheet(
-            """
-            QWidget {
-                background-color: #f6f7fb;
-                color: #111827;
-            }
-            QGroupBox {
-                border: 1px solid #e5e7eb;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding: 10px;
-                background-color: #ffffff;
-            }
-            QGroupBox:title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
-                color: #374151;
-                font-weight: 600;
-            }
-            QLabel {
-                background: transparent;
-            }
-            QTextEdit, QLineEdit, QDateTimeEdit, QComboBox {
-                background: #ffffff;
-                border: 1px solid #d1d5db;
-                border-radius: 6px;
-                padding: 6px;
-            }
-            QLineEdit[readOnly="true"] {
-                background: #f3f4f6;
-                color: #374151;
-            }
-            QPushButton#primaryButton {
-                background-color: #0f766e;
-                color: #ffffff;
-                border: none;
-                border-radius: 6px;
-                padding: 6px 12px;
-            }
-            QPushButton#primaryButton:hover {
-                background-color: #0b6b63;
-            }
-            QPushButton#primaryButton:pressed {
-                background-color: #0a5f58;
-            }
-            QPushButton#secondaryButton {
-                background-color: #eef2ff;
-                color: #1f2937;
-                border: 1px solid #d1d5db;
-                border-radius: 6px;
-                padding: 6px 12px;
-            }
-            QPushButton#secondaryButton:hover {
-                background-color: #e0e7ff;
-            }
-            """
-        )
+        self.setStyleSheet(load_search_style())
         self.alert_detail = None
 
         # region 部件: 输入
@@ -171,13 +126,13 @@ class MainWindow(QtWidgets.QWidget):
         output_layout.addWidget(self.output_text)
         # endregion
 
-        input_group = QtWidgets.QGroupBox("Input")
+        input_group = QtWidgets.QGroupBox("1. 输入")
         input_group.setLayout(input_layout)
-        run_group = QtWidgets.QGroupBox("Run")
+        run_group = QtWidgets.QGroupBox("2. 时间设置")
         run_group.setLayout(run_group_layout)
-        result_group = QtWidgets.QGroupBox("Result Files")
+        result_group = QtWidgets.QGroupBox("3. 下载结果")
         result_group.setLayout(csv_grid_layout)
-        output_group = QtWidgets.QGroupBox("Output")
+        output_group = QtWidgets.QGroupBox("输出")
         output_group.setLayout(output_layout)
 
         layout = QtWidgets.QVBoxLayout()
@@ -294,9 +249,10 @@ def main() -> int:
     font = app.font()
     font.setPointSize(font.pointSize() + 4)
     app.setFont(font)
-    window = MainWindow()
-    window.resize(1366, 1080)
-    window.show()
+    app.setStyleSheet(load_app_style())
+    widget = SearchAlertErrorWidget()
+    widget.resize(1366, 1080)
+    widget.show()
     return app.exec_()
 
 

@@ -13,11 +13,11 @@ PROJ_PATH = os.path.dirname(os.path.dirname(__SCRIPT_DIR))
 if PROJ_PATH not in sys.path:
     sys.path.insert(0, PROJ_PATH)
 
-from CloudWatch.LambdaRequestLog.AlertDataclass import LogDetail
-from CloudWatch.cloud_watch_helper import get_log_client, filter_log_events
-from utils.aws_consts import AllEnvs, Env
-from utils.aws_consts_profile import get_profiles_for_curr_pc, PROFILE_Samson
-from utils.aws_urls import gen_cloud_watch_log_stream_url
+from CloudWatch.LambdaRequestLog.AlertDataclass import LogDetail  # noqa: E402
+from CloudWatch.cloud_watch_helper import get_log_client, filter_log_events  # noqa: E402
+from utils.aws_consts import AllEnvs, Env  # noqa: E402
+from utils.aws_consts_profile import get_profiles_for_curr_pc, PROFILE_Samson  # noqa: E402
+from utils.aws_urls import gen_cloud_watch_log_stream_url  # noqa: E402
 
 """
 使用方法：
@@ -30,9 +30,9 @@ from utils.aws_urls import gen_cloud_watch_log_stream_url
 ALERT_DETAIL = '''
 Lambda Log 告警
 区域: cn-northwest-1
-函数: 
-告警内容: 
-告警时间: 
+函数:
+告警内容:
+告警时间:
 错误数量：
 首行错误：
 查看详情
@@ -59,7 +59,7 @@ def main():
                     ALERT_DETAIL = input_data
                 print(f'告警信息来源：{input_file_path}')
         except FileNotFoundError:
-            print(f'告警信息来源：当前脚本')
+            print('告警信息来源：当前脚本')
         except Exception as e:
             print(e)
             import traceback
@@ -140,9 +140,9 @@ def from_alert_dt_str(time_str: str) -> datetime:
 
 
 def parse_alert_detail(alert_detail: str) -> AlertDetail:
-    func_name = get_func_from_event(alert_detail)
-    alarm_dt_str = get_time_from_event(alert_detail)
-    rgn = get_rgn_from_event(alert_detail)
+    func_name = get_func_from_event(alert_detail) or ''
+    alarm_dt_str = get_time_from_event(alert_detail) or ''
+    rgn = get_rgn_from_event(alert_detail) or ''
     missing = [
         name for name, value in (
             ('function', func_name),
@@ -245,7 +245,7 @@ def handle_alert(
     # 准备输出 Error 事件完整日志
     id_set = set([d.id for d in log_details_err])
     if not id_set:
-        print(f'请求 ID 集为空，没法获取完整日志')
+        print('请求 ID 集为空，没法获取完整日志')
         return HandleAlertResult(
             error_cnt=len(log_details_err),
             error_csv=error_file,
@@ -360,7 +360,7 @@ def save_log_details_to_csv(file_name: str, log_details: List[LogDetail]):
         writer.writerows(rows)
 
 
-def read_log_details_from_csv(file_name: str, top_n_lines: int = None) -> List[LogDetail]:
+def read_log_details_from_csv(file_name: str, top_n_lines: Optional[int] = None) -> List[LogDetail]:
     with open(file_name, 'r', encoding='utf8') as f_in:
         reader = csv.DictReader(f_in, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
         rows = [row for row in reader]

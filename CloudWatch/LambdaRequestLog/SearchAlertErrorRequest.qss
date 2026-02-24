@@ -1,0 +1,23 @@
+QPushButton#primaryButton {
+    background-color: #0f766e;
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 12px;
+}
+QPushButton#primaryButton:hover {
+    background-color: #0b6b63;
+}
+QPushButton#primaryButton:pressed {
+    background-color: #0a5f58;
+}
+QPushButton#secondaryButton {
+    background-color: #eef2ff;
+    color: #1f2937;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 6px 12px;
+}
+QPushButton#secondaryButton:hover {
+    background-color: #e0e7ff;
+}

@@ -9,9 +9,9 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 __SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJ_PATH = os.path.dirname(os.path.dirname(__SCRIPT_DIR))
-if PROJ_PATH not in sys.path:
-    sys.path.insert(0, PROJ_PATH)
+__PROJ_DIR = os.path.dirname(os.path.dirname(__SCRIPT_DIR))
+if __PROJ_DIR not in sys.path:
+    sys.path.insert(0, __PROJ_DIR)
 
 from CloudWatch.LambdaRequestLog.AlertDataclass import LogDetail  # noqa: E402
 from CloudWatch.cloud_watch_helper import get_log_client, filter_log_events  # noqa: E402
@@ -44,7 +44,7 @@ PROFILE_CN, PROFILE_US = '', ''
 # 设置数据文件夹
 DATA_DIR = __SCRIPT_DIR
 if pc_name in {'Source-XiaLijie'}:
-    DATA_DIR = os.path.join(PROJ_PATH, 'CloudWatch', 'Data', 'LambdaRequestLog')
+    DATA_DIR = os.path.join(__PROJ_DIR, 'CloudWatch', 'Data', 'LambdaRequestLog')
 
 
 def main():

@@ -10,9 +10,10 @@ PROJ_PATH = os.path.dirname(os.path.dirname(__SCRIPT_DIR))
 if PROJ_PATH not in sys.path:
     sys.path.insert(0, PROJ_PATH)
 
-from CloudWatch.LambdaRequestLog.SearchAlertErrorRequest import AlertDetail, handle_alert, parse_alert_detail, \
-    HandleAlertResult
-from utils.logging_helper import setup_logging
+from CloudWatch.LambdaRequestLog.SearchAlertErrorRequest import (  # noqa: E402
+    AlertDetail, handle_alert, parse_alert_detail, HandleAlertResult
+)
+from utils.logging_helper import setup_logging  # noqa: E402
 
 
 class MainWindow(QtWidgets.QWidget):
@@ -20,13 +21,82 @@ class MainWindow(QtWidgets.QWidget):
         super().__init__()
         self.setWindowTitle("PaLogSearcher")
 
+        self.setStyleSheet(
+            """
+            QWidget {
+                background-color: #f6f7fb;
+                color: #111827;
+            }
+            QGroupBox {
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding: 10px;
+                background-color: #ffffff;
+            }
+            QGroupBox:title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 6px;
+                color: #374151;
+                font-weight: 600;
+            }
+            QLabel {
+                background: transparent;
+            }
+            QTextEdit, QLineEdit, QDateTimeEdit, QComboBox {
+                background: #ffffff;
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                padding: 6px;
+            }
+            QLineEdit[readOnly="true"] {
+                background: #f3f4f6;
+                color: #374151;
+            }
+            QPushButton#primaryButton {
+                background-color: #0f766e;
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                padding: 6px 12px;
+            }
+            QPushButton#primaryButton:hover {
+                background-color: #0b6b63;
+            }
+            QPushButton#primaryButton:pressed {
+                background-color: #0a5f58;
+            }
+            QPushButton#secondaryButton {
+                background-color: #eef2ff;
+                color: #1f2937;
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                padding: 6px 12px;
+            }
+            QPushButton#secondaryButton:hover {
+                background-color: #e0e7ff;
+            }
+            """
+        )
         self.alert_detail = None
 
+        # region 部件: 输入
         self.input_text = QtWidgets.QTextEdit()
         self.input_text.setPlaceholderText("飞书告警内容...")
-
+        self.input_text.setMinimumHeight(140)
         self.parse_button = QtWidgets.QPushButton("解析")
+        self.parse_button.setObjectName('secondaryButton')
+        # endregion
 
+        # region layout: 输入
+        input_layout = QtWidgets.QVBoxLayout()
+        input_layout.setSpacing(8)
+        input_layout.addWidget(self.input_text)
+        input_layout.addWidget(self.parse_button)
+        # endregion
+
+        # region 部件: 运行
         # 开始时间
         self.start_datetime_edit = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTime())
         self.start_datetime_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
@@ -44,47 +114,79 @@ class MainWindow(QtWidgets.QWidget):
         self.offset_unit_combo = QtWidgets.QComboBox()
         self.offset_unit_combo.addItems(["分钟", "小时", "天", "周", "月"])
         self.update_start_datetime_edit()
-
-        time_layout = QtWidgets.QHBoxLayout()
-        time_layout.addWidget(QtWidgets.QLabel("开始时间"))
-        time_layout.addWidget(self.start_datetime_edit)
-        time_layout.addWidget(QtWidgets.QLabel("结束时间"))
-        time_layout.addWidget(self.end_datetime_edit)
-        time_layout.addWidget(self.offset_input)
-        time_layout.addWidget(self.offset_unit_combo)
-
+        # 运行按钮
         self.run_button = QtWidgets.QPushButton("运行")
+        self.run_button.setObjectName('primaryButton')
+        # endregion
 
+        # region layout: 运行
+        run_layout = QtWidgets.QHBoxLayout()
+        run_layout.addWidget(QtWidgets.QLabel("开始时间"))
+        run_layout.addWidget(self.start_datetime_edit)
+        run_layout.addWidget(QtWidgets.QLabel("结束时间"))
+        run_layout.addWidget(self.end_datetime_edit)
+        run_layout.addWidget(self.offset_input)
+        run_layout.addWidget(self.offset_unit_combo)
+
+        run_group_layout = QtWidgets.QVBoxLayout()
+        run_group_layout.setSpacing(8)
+        run_group_layout.addLayout(run_layout)
+        run_group_layout.addWidget(self.run_button)
+        # endregion
+
+        # region 部件: 结果
         self.error_csv_input = QtWidgets.QLineEdit()
         self.error_csv_input.setPlaceholderText("error_csv")
         self.error_csv_input.setReadOnly(True)
-        self.open_error_button = QtWidgets.QPushButton("打开 error_csv")
+        self.open_error_button = QtWidgets.QPushButton("打开错误日志 csv")
+        self.open_error_button.setObjectName('secondaryButton')
 
         self.full_csv_input = QtWidgets.QLineEdit()
         self.full_csv_input.setPlaceholderText("full_csv")
         self.full_csv_input.setReadOnly(True)
-        self.open_full_button = QtWidgets.QPushButton("打开 full_csv")
+        self.open_full_button = QtWidgets.QPushButton("打开全量日志 csv")
+        self.open_full_button.setObjectName('secondaryButton')
+        # endregion
 
+        # region layout: 结果
         csv_grid_layout = QtWidgets.QGridLayout()
-        csv_grid_layout.addWidget(QtWidgets.QLabel("error_csv"), 0, 0)
-        csv_grid_layout.addWidget(self.error_csv_input, 0, 1)
-        csv_grid_layout.addWidget(self.open_error_button, 0, 2)
-        csv_grid_layout.addWidget(QtWidgets.QLabel("full_csv"), 1, 0)
-        csv_grid_layout.addWidget(self.full_csv_input, 1, 1)
-        csv_grid_layout.addWidget(self.open_full_button, 1, 2)
+        csv_grid_layout.addWidget(self.error_csv_input, 0, 0)
+        csv_grid_layout.addWidget(self.open_error_button, 0, 1)
+        csv_grid_layout.addWidget(self.full_csv_input, 1, 0)
+        csv_grid_layout.addWidget(self.open_full_button, 1, 1)
+        csv_grid_layout.setSpacing(8)
+        csv_grid_layout.setColumnStretch(0, 1)
+        # endregion
 
+        # region 部件: 输出
         self.output_text = QtWidgets.QTextEdit()
         self.output_text.setPlaceholderText("输出...")
         self.output_text.setReadOnly(True)
+        self.output_text.setMinimumHeight(180)
+        self.output_text.setFont(QtGui.QFont('Consolas'))
+        # endregion
+
+        # region layout: 输出
+        output_layout = QtWidgets.QVBoxLayout()
+        output_layout.addWidget(self.output_text)
+        # endregion
+
+        input_group = QtWidgets.QGroupBox("Input")
+        input_group.setLayout(input_layout)
+        run_group = QtWidgets.QGroupBox("Run")
+        run_group.setLayout(run_group_layout)
+        result_group = QtWidgets.QGroupBox("Result Files")
+        result_group.setLayout(csv_grid_layout)
+        output_group = QtWidgets.QGroupBox("Output")
+        output_group.setLayout(output_layout)
 
         layout = QtWidgets.QVBoxLayout()
-        layout.setSpacing(10)
-        layout.addWidget(self.input_text)
-        layout.addWidget(self.parse_button)
-        layout.addLayout(time_layout)
-        layout.addWidget(self.run_button)
-        layout.addLayout(csv_grid_layout)
-        layout.addWidget(self.output_text)
+        layout.setSpacing(12)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.addWidget(input_group)
+        layout.addWidget(run_group)
+        layout.addWidget(result_group)
+        layout.addWidget(output_group)
         self.setLayout(layout)
 
         self.parse_button.clicked.connect(self.on_parse_clicked)
@@ -123,8 +225,7 @@ class MainWindow(QtWidgets.QWidget):
     def on_run_clicked(self) -> None:
         content = self.input_text.toPlainText()
         try:
-            if self.alert_detail is None:
-                self.alert_detail = parse_alert_detail(content)
+            self.alert_detail = parse_alert_detail(content)
             result: HandleAlertResult = handle_alert(
                 self.alert_detail,
                 dt_start=self.get_start_datetime(),

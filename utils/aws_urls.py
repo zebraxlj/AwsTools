@@ -1,3 +1,4 @@
+from typing import Optional
 from urllib import parse
 
 
@@ -9,6 +10,24 @@ def gen_cloud_watch_log_stream_url(log_group: str, log_rgn: str, log_event: dict
         host = 'console.aws.amazon.com'
     param = {'start': log_event["timestamp"], 'refEventId': log_event["eventId"]}
     e_path = f'{log_event["logStreamName"]}?{parse.urlencode(param)}'
+    return f'https://{log_rgn}.{host}/cloudwatch/home?region={log_rgn}#logsV2:log-groups/log-group/{mask_url_part(log_group)}/log-events/{mask_url_part(e_path)}'  # noqa
+
+
+def gen_cloud_watch_log_stream_url1(
+        log_group: str, log_rgn: str, log_stream: str,
+        timestamp: Optional[int] = None, event_id: Optional[str] = None,
+) -> str:
+    """ 生成 LogStream 链接 """
+    if log_rgn.startswith('cn'):
+        host = 'console.amazonaws.cn'
+    else:
+        host = 'console.aws.amazon.com'
+    param = {}
+    if timestamp is not None:
+        param['start'] = timestamp
+    if event_id is not None:
+        param['refEventId'] = event_id
+    e_path = f'{log_stream}?{parse.urlencode(param)}'
     return f'https://{log_rgn}.{host}/cloudwatch/home?region={log_rgn}#logsV2:log-groups/log-group/{mask_url_part(log_group)}/log-events/{mask_url_part(e_path)}'  # noqa
 
 

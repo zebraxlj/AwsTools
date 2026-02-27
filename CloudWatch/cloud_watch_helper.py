@@ -1,7 +1,7 @@
 import boto3
 import boto3.session
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from utils.aws_client_helper import get_aws_profile
 from utils.aws_consts import AllEnvs, Env
@@ -103,6 +103,56 @@ def filter_log_events(
             break
         if not next_tkn:
             break
+        if stop_event is not None and stop_event.is_set():
+            break
+
+    return events_all
+
+
+def get_log_events(
+        client,
+        logStreamName,
+        logGroupName: Optional[str] = None,
+        startTime: Optional[Union[int, datetime]] = None,
+        endTime: Optional[Union[int, datetime]] = None,
+        limit: Optional[int] = None,
+        startFromHead: bool = False,
+        stop_event=None,
+) -> List[dict]:
+    if isinstance(startTime, datetime):
+        startTime = int(startTime.timestamp() * 1000)
+    if isinstance(endTime, datetime):
+        endTime = int(endTime.timestamp() * 1000)
+
+    next_tkn = ''
+    events_all: List[dict] = []
+    while True:
+        kwargs = {}
+        if logGroupName is not None:
+            kwargs['logGroupName'] = logGroupName
+        if startTime is not None:
+            kwargs['startTime'] = startTime
+        if endTime is not None:
+            kwargs['endTime'] = endTime
+        if next_tkn:
+            kwargs['nextToken'] = next_tkn
+        if limit is not None:
+            kwargs['limit'] = limit
+        if startFromHead:
+            kwargs['startFromHead'] = True
+        response = client.get_log_events(logStreamName=logStreamName, **kwargs)
+        print(response)
+        events = response['events']
+
+        if not events:
+            break
+        events_all += response['events']
+
+        next_tkn_curr = response['nextForwardToken'] if startFromHead else response['nextBackwardToken']
+        if next_tkn_curr == next_tkn:
+            break
+        next_tkn = next_tkn_curr
+
         if stop_event is not None and stop_event.is_set():
             break
 

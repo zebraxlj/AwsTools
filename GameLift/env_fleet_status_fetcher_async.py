@@ -106,7 +106,7 @@ async def describe_fleet_location_attribute_all(
                 except Exception as e:
                     print(e)
                     print(''.join(list(reversed(traceback.format_tb(e.__traceback__)))))
-                    time.sleep(15)
+                    await asyncio.sleep(15)
                     continue
                 if 'LocationAttributes' not in data:
                     raise Exception('Missing Key(LocationAttributes) in boto3 describe_fleet_location_attributes resp')
@@ -116,8 +116,13 @@ async def describe_fleet_location_attribute_all(
                 if not next_token:
                     break
             env_fleets_location_attributes_dict[fleet_id] = support_multi_location, fleets_location_attrs
-        async with asyncio.Semaphore(20):
-            await asyncio.gather(*(describe_fleet_location_attribute(fleet_id=fleet_id) for fleet_id in fleet_ids))
+        sem = asyncio.Semaphore(20)
+
+        async def _wrapped_describe(fid: str):
+            async with sem:
+                await describe_fleet_location_attribute(fid)
+
+        await asyncio.gather(*(_wrapped_describe(fleet_id) for fleet_id in fleet_ids))
     return env_fleets_location_attributes_dict
 
 
@@ -161,7 +166,7 @@ async def get_multilocation_fleets_async(region: str, env: Env, fleet_ids: List[
                 except Exception as e:
                     print(e)
                     print(''.join(list(reversed(traceback.format_tb(e.__traceback__)))))
-                    time.sleep(15)
+                    await asyncio.sleep(15)
                     continue
                 if 'LocationAttributes' not in data:
                     raise Exception('Missing Key(LocationAttributes) in boto3 describe_fleet_location_attributes resp')
@@ -189,8 +194,13 @@ async def get_multilocation_fleets_async(region: str, env: Env, fleet_ids: List[
                 fleet_location_capacity.append(FleetLocationCapacity.from_dict(data['FleetCapacity']))
             fleet_location_capacity_all[fleet_id] = fleet_location_capacity
 
-        async with asyncio.Semaphore(20):
-            await asyncio.gather(*(handle_multilocation_fleet_one_async(fleet_id=fleet_id) for fleet_id in fleet_ids))
+        sem = asyncio.Semaphore(20)
+
+        async def _wrapped_handle(fid: str):
+            async with sem:
+                await handle_multilocation_fleet_one_async(fid)
+
+        await asyncio.gather(*(_wrapped_handle(fleet_id) for fleet_id in fleet_ids))
         return fleet_location_attributes_all, fleet_location_capacity_all
 
 
@@ -212,7 +222,7 @@ async def get_non_multilocation_fleets_async(
             except Exception as e:
                 print(e)
                 print(''.join(list(reversed(traceback.format_tb(e.__traceback__)))))
-                time.sleep(10)
+                await asyncio.sleep(10)
                 continue
             # 返回结构：https://boto3.amazonaws.com/v1/documentation/api/1.14.25/reference/services/gamelift.html#GameLift.Client.describe_fleet_capacity
             if 'FleetCapacity' not in data:

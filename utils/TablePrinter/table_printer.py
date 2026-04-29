@@ -332,7 +332,10 @@ class BaseRow:
                 if href is None:
                     continue
                 attr_value_original = ret[attr_name]
-                ret[attr_name] = f"\033]8;;{href}\033\\{attr_value_original}\033]8;;\033\\"
+                if sys.platform == 'win32':
+                    ret[attr_name] = f"\x1b]8;;{href}\x1b\\{attr_value_original}\x1b]8;;\x1b\\"
+                elif sys.platform == 'linux':
+                    ret[attr_name] = f"\033]8;;{href}\033\\{attr_value_original}\033]8;;\033\\"
         return ret
 
     def get_col_value_disp_len(self) -> Dict[str, int]:
@@ -618,7 +621,7 @@ def can_display_href() -> bool:
         if 'WT_SESSION' in os.environ:
             return True
         # powershell 不支持
-        return False
+        return True
     elif sys.platform == 'linux':
         return True
     elif sys.platform == 'darwin':

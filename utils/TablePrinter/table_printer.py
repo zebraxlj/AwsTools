@@ -5,9 +5,10 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Generic, List, Optional, TypeVar
+from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
 
 from utils.ColorHelper.color_xterm_256 import ColorXTerm256
+from utils.TablePrinter.table_printer_consts import BoxDrawingChar
 
 
 class ColumnAlignment(str, Enum):
@@ -25,10 +26,13 @@ class FontFormat:
     FgColor: ColorXTerm256 = ColorXTerm256.BLACK
 
     def apply_format(self, text: str) -> str:
+        codes = []
         if isinstance(self.BgColor, ColorXTerm256):
-            text = f'\033[;48;5;{self.BgColor}m{text}\033[0m'
+            codes.append(f'48;5;{self.BgColor}')
         if isinstance(self.FgColor, ColorXTerm256):
-            text = f'\033[;38;5;{self.FgColor}m{text}\033[0m'
+            codes.append(f'38;5;{self.FgColor}')
+        if codes:
+            return f'\033[{";".join(codes)}m{text}\033[0m'
         return text
 
 
@@ -54,11 +58,6 @@ class CondFmtContain(ConditionalFormat):
 
     def apply_format(self, text: Any) -> str:
         return self.format.apply_format(str(text))
-        text = str(text)
-        return f"\033[;48;5;{ColorXTerm256.RED}m{text}\033[0m"
-        len_space_l = len(text) - len(text.lstrip())
-        len_space_r = len(text) - len(text.rstrip())
-        return f'{"*" * len_space_l}{text.strip()}{"*" * len_space_r}'
 
     def is_condition_match(self, text: str) -> bool:
         if self.contain_target is None:
@@ -72,12 +71,13 @@ class CondFmtExactMatch(ConditionalFormat):
 
     def apply_format(self, text: Any) -> str:
         return self.format.apply_format(text)
-        text = str(text)
-        len_space_l = text.index(self.match_target)
-        len_space_r = len(text) - len_space_l - len(self.match_target)
-        return f'{"*" * len_space_l}{self.match_target}{"*" * len_space_r}'
 
     def is_condition_match(self, text: str) -> bool:
+        """检查 text 是否与 match_target 精确匹配。
+
+        注意: 比较时 match_target 会被 str() 转换后与 text 比较，
+        因此 match_target=True 实际匹配的是字符串 "True"，match_target=-1 匹配 "-1"。
+        """
         if self.match_target is None:
             raise ValueError('match_target is not defined')
         return text == str(self.match_target)
@@ -94,7 +94,7 @@ class ColumnConfig:
     """
     alias: Optional[str] = None
 
-    align: ColumnAlignment = ColumnAlignment.CENTER
+    align: Optional[ColumnAlignment] = ColumnAlignment.CENTER
 
     conditional_format: ConditionalFormat = field(default_factory=lambda: COND_FMT_DEFAULT)
 
@@ -120,6 +120,15 @@ class BaseRow:
     _COL_HEADER_DISP_LEN_MAP: Optional[Dict[str, int]] = None
     _COL_HEADER_LEN_MAP: Optional[Dict[str, int]] = None
     _COL_HEADER_MAP: Optional[Dict[str, str]] = None
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # 每个子类独立持有缓存，避免沿 MRO 读到其他子类的缓存
+        cls._CONFIG_PREFIX = ''
+        cls._COL_ATTR_NAMES = None
+        cls._COL_HEADER_DISP_LEN_MAP = None
+        cls._COL_HEADER_LEN_MAP = None
+        cls._COL_HEADER_MAP = None
 
     @classmethod
     def __GET_CONFIG_PREFIX(cls):
@@ -304,13 +313,13 @@ class BaseRow:
         """
         ret = dict()
         for attr_name in self.get_col_attr_names():
-            attr_val = self.__getattribute__(attr_name)
+            attr_val = getattr(self, attr_name)
             if isinstance(attr_val, datetime):
                 col_config: ColumnConfig = self.get_config(attr_name)
                 if col_config.format:
                     ret[attr_name] = attr_val.strftime(col_config.format)
                     continue
-            ret[attr_name] = str(self.__getattribute__(attr_name))
+            ret[attr_name] = str(getattr(self, attr_name))
         return ret
 
     def get_col_value_true(self) -> Dict[str, str]:
@@ -369,7 +378,7 @@ class BaseRow:
         """
         ret = dict()
         for attr_name in self.get_col_attr_names():
-            ret[attr_name] = len(str(self.__getattribute__(attr_name)))
+            ret[attr_name] = len(str(getattr(self, attr_name)))
         return ret
 
     @classmethod
@@ -406,12 +415,12 @@ TBaseRow = TypeVar('TBaseRow', bound=BaseRow)
 
 
 class BaseTable(Generic[TBaseRow]):
-    row_type: type[TBaseRow]
+    row_type: Type[TBaseRow]
     CHAR_LN: str = '\r\n'
-    CHAR_COL_SEP: str = '\u2502'
-    CHAR_ROW_SEP: str = '\u2500'
-    CHAR_HEADER_H_SEP: str = '\u2550'
-    CHAR_HEADER_V_SEP: str = '\u256a'
+    CHAR_COL_SEP: str = BoxDrawingChar.LIGHT_VERTICAL
+    CHAR_ROW_SEP: str = BoxDrawingChar.LIGHT_HORIZONTAL
+    CHAR_HEADER_H_SEP: str = BoxDrawingChar.DOUBLE_HORIZONTAL
+    CHAR_HEADER_V_SEP: str = BoxDrawingChar.VERTICAL_SINGLE_AND_HORIZONTAL_DOUBLE
 
     def __init__(self, *args, **kwargs):
         self.__COL_MAX_DISP_LEN: defaultdict = defaultdict(int)
@@ -446,7 +455,7 @@ class BaseTable(Generic[TBaseRow]):
             self.__COL_MAX_LEN[col] = max(self.__COL_MAX_LEN[col], val_len)
 
     def get_sorted_rows(
-            self, order_by: List[str], ascending: List[bool] = field(default_factory=lambda: [])
+            self, order_by: List[str], ascending: Optional[List[bool]] = None
             ) -> List[TBaseRow]:
         """ return the sorted row list of the current table
         Args:
@@ -490,7 +499,7 @@ class BaseTable(Generic[TBaseRow]):
                 # sorting order is all ascending or decending
                 ret = sorted(
                     ret,
-                    key=lambda row_data: [row_data.__getattribute__(attr_name) for attr_name in order_by],
+                    key=lambda row_data: [getattr(row_data, attr_name) for attr_name in order_by],
                     reverse=True if is_all_desc else False,
                 )
             else:
@@ -498,7 +507,7 @@ class BaseTable(Generic[TBaseRow]):
                 # When multiple records have the same key, their original order is preserved.
                 for attr_name, asc in zip(order_by[::-1], ascending[::-1]):
                     ret = sorted(
-                        ret, key=lambda row_data: row_data.__getattribute__(attr_name), reverse=not asc
+                        ret, key=lambda row_data: getattr(row_data, attr_name), reverse=not asc
                     )
         elif ascending:
             raise ValueError('ascending should not be passed without order_by')
@@ -518,7 +527,7 @@ class BaseTable(Generic[TBaseRow]):
         )
         return ret
 
-    def get_table_header_sep_str(self, sep_h: str = '', sep_v: str = '') -> str:
+    def get_table_header_sep_str(self, sep_h: str = None, sep_v: str = None) -> str:
         """ generate the header separator line for the output table
         Args:
             sep_h (str, optional): horrizontal separater
@@ -530,11 +539,11 @@ class BaseTable(Generic[TBaseRow]):
         sep_v = sep_v if sep_v else self.CHAR_HEADER_V_SEP
         return self.get_table_line_sep_str(sep_h=sep_h, sep_v=sep_v)
 
-    def get_table_line_sep_str(self, sep_h: str = '', sep_v: str = '', dense: bool = True) -> str:
+    def get_table_line_sep_str(self, sep_h: str = None, sep_v: str = None, dense: bool = True) -> str:
         """ generate row separator line for the output table
         Args:
-            sep_h (str, optional): horrizontal separater. Defaults to empty.
-            sep_v (str, optional): vertical separater. Defaults to empty.
+            sep_h (str, optional): horrizontal separater. Defaults to None.
+            sep_v (str, optional): vertical separater. Defaults to None.
             dense (bool, optional):
                 When True there'll be no space between row sep_h and column sep_v Ex. ----|----.
                 When False there'll be a space between row sep_h and column sep_v Ex. --- | ---.
@@ -594,7 +603,7 @@ class BaseTable(Generic[TBaseRow]):
         self.row_list.append(row_data)
         self._update_col_max_disp_len(row_data=row_data)
 
-    def print_table(self, order_by: List[str] = [], ascending: List[bool] = []):
+    def print_table(self, order_by: List[str] = None, ascending: List[bool] = None):
         """print the table
         Args:
             order_by (List[str], optional): see order_by in get_sorted_rows
@@ -621,25 +630,23 @@ def can_display_href() -> bool:
         if 'WT_SESSION' in os.environ:
             return True
         # powershell 不支持
-        return True
+        return False
     elif sys.platform == 'linux':
         return True
     elif sys.platform == 'darwin':
         # macOS 默认 Terminal 不支持
         return False
     else:
-        raise RuntimeError("Unsupported platform")
+        raise NotImplementedError("Unsupported platform")
 
 
 def get_display_ansi_width(s: str) -> int:
     """ return the display length of the given string. Any wide characters in the input string takes 2 spaces """
     length = 0
     for char in s:
-        # Get the Unicode character category
-        category = unicodedata.category(char)
-        # Check for wide characters
-        if category in ('Lo'):
-            length += 2  # Wide characters take 2 spaces
+        # East_Asian_Width 'F'(Fullwidth) and 'W'(Wide) occupy 2 terminal columns
+        if unicodedata.east_asian_width(char) in ('F', 'W'):
+            length += 2
         else:
-            length += 1  # Narrow characters take 1 space
+            length += 1
     return length

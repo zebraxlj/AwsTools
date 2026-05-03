@@ -4,7 +4,7 @@ import multiprocessing
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -12,7 +12,7 @@ os.chdir('..')
 sys.path.append(os.getcwd())
 
 from CloudWatch.cloud_watch_dataclass import FilterLogEventsResp  # noqa: E402
-from CloudWatch.cloud_watch_helper import filter_log_events  # noqa: E402
+from CloudWatch.cloud_watch_helper import filter_log_events, filter_log_events_descending  # noqa: E402
 from utils import aws_urls  # noqa: E402
 from utils.aws_client_error_handler import print_err  # noqa: E402
 from utils.aws_consts import REGION_ABBR, REGION_TO_ABBR  # noqa: E402
@@ -38,9 +38,10 @@ REGIONS = [
 # DT_START_UTC = None
 # DT_END_UTC = None
 DT_START_UTC = datetime(2026, 4, 18, tzinfo=timezone.utc)
-DT_END_UTC = datetime.now(timezone.utc)
-ASCENDING = True  # filter_log_events 不支持排序，且默认顺序。当需要倒叙时，要用 describe_log_streams 倒叙获取日志
-FIND_FIRST = False
+DT_END_UTC = datetime(2026, 4, 22, tzinfo=timezone.utc)
+ASCENDING = False  # False 时使用 filter_log_events_descending：将时间范围从后往前分段，每段调用 filter_log_events 后反转，实现倒序
+FIND_FIRST = True
+SEGMENT_DURATION = timedelta(hours=24)  # 倒序搜索时每段的时间长度
 # PATTERN = r'%bad publisher key%'
 # PATTERN = r'request = Operation ClaimBpLoginRewardAfterFinish AccountId QGH43Y'
 # PATTERN = r'%\[ERROR\]%'
@@ -116,7 +117,7 @@ def process_print(
 def process_worker(
     log_group_name: str, region: str,
     dt_start_utc: datetime, dt_end_utc: datetime,
-    find_first: bool,
+    ascending: bool, find_first: bool, segment_duration: timedelta,
     shared_msg_dict: dict, shared_dict: Dict[str, list], stop_event,
 ):
     fmt = '%Y-%m-%d %H:%M:%S.%f'
@@ -131,12 +132,24 @@ def process_worker(
     shared_dict[shared_key] = []
 
     # 获取日志
-    events, _stats = filter_log_events(
-        region, log_group_name, PATTERN,
-        dt_start=dt_start_utc, dt_end=dt_end_utc,
-        is_stop_on_match=find_first,
-        stop_event=stop_event,
-    )
+    if not ascending and find_first:
+        events, _stats = filter_log_events_descending(
+            region, log_group_name, PATTERN,
+            dt_start=dt_start_utc, dt_end=dt_end_utc,
+            is_stop_on_match=True,
+            stop_event=stop_event,
+            segment_duration=segment_duration,
+        )
+    else:
+        events, _stats = filter_log_events(
+            region, log_group_name, PATTERN,
+            dt_start=dt_start_utc, dt_end=dt_end_utc,
+            is_stop_on_match=find_first,
+            stop_event=stop_event,
+        )
+
+    if not ascending:
+        events.reverse()
     log_event_objs = [FilterLogEventsResp(**e) for e in events]
     for e in log_event_objs:
         event_ts = datetime.fromtimestamp(e.timestamp / 1000, tz=timezone.utc)
@@ -148,9 +161,8 @@ def process_worker(
     shared_dict[shared_key] = events
 
     worker_duration = (datetime.now() - worker_dt_start).total_seconds()
-    shared_msg_dict[shared_key] = [__gen_msg(f'{shared_key}: 完成。耗时：{worker_duration}s 命中：{len(events)}')]
+    shared_msg_dict[shared_key] = [__gen_msg(f'{shared_key}: 完成。耗时：{worker_duration:.3f}s 任务总结：{_stats}')]
     print(shared_msg_dict[shared_key])
-    print(__gen_msg(f'{shared_key}: 完成。耗时：{worker_duration}s 命中：{len(events)}'))
 
 
 def run_parallel(log_group_names: List[str], regions: List[str]):
@@ -168,7 +180,7 @@ def run_parallel(log_group_names: List[str], regions: List[str]):
                 process = multiprocessing.Process(
                     target=process_worker, args=(
                         group_name, rgn,
-                        DT_START_UTC, DT_END_UTC, FIND_FIRST,
+                        DT_START_UTC, DT_END_UTC, ASCENDING, FIND_FIRST, SEGMENT_DURATION,
                         shared_msg_dict, shared_dict, stop_event,
                     )
                 )
@@ -203,9 +215,17 @@ def run_sequential(log_group_names: List[str], regions: List[str]):
             dt_start = datetime.now()
             print(f'开始：{name} {REGION_TO_ABBR.get(rgn, rgn)} {dt_start.strftime(fmt)}')
             try:
-                events, _ = filter_log_events(
-                    rgn, name, PATTERN, dt_start=DT_START_UTC, dt_end=DT_END_UTC, is_stop_on_match=FIND_FIRST
-                )
+                if not ASCENDING and FIND_FIRST:
+                    events, _ = filter_log_events_descending(
+                        rgn, name, PATTERN, dt_start=DT_START_UTC, dt_end=DT_END_UTC, is_stop_on_match=True,
+                        segment_duration=SEGMENT_DURATION,
+                    )
+                else:
+                    events, _ = filter_log_events(
+                        rgn, name, PATTERN, dt_start=DT_START_UTC, dt_end=DT_END_UTC, is_stop_on_match=FIND_FIRST
+                    )
+                if not ASCENDING:
+                    events.reverse()
             except Exception as e:
                 print_err(f'{name} {REGION_TO_ABBR.get(rgn, rgn)} {e}')
                 events = []
@@ -267,6 +287,12 @@ def __parse_args(args: List[str]):
     g_sort.add_argument('--orderby', **sort_kwargs)
     g_sort.add_argument('--sort', **sort_kwargs)
 
+    # 倒序搜索分段时长
+    parser.add_argument('--segment-duration', '-seg',
+                        type=int, default=None, required=False,
+                        help='[选填] 倒序搜索时每段的时长（分钟），默认 60。仅在倒序 + find-first 时生效',
+                        )
+
     return parser.parse_args(args)
 
 
@@ -278,7 +304,6 @@ def __prepare_global_var(args):
         LOG_GROUP_NAMES[idx] = name if name.startswith('/aws/lambda/') else f'/aws/lambda/{name}'
 
     FIND_FIRST = args.find_first
-    print('__prepare_global_var', 'FIND_FIRST', FIND_FIRST)
 
     # 处理地区
     bad_regions = [r for r in arg_regions if r not in REGION_ABBR and r not in REGION_TO_ABBR]
@@ -298,10 +323,12 @@ def __prepare_global_var(args):
         DT_END_UTC = datetime.strptime(args.utc_end, fmt)
 
     # 处理排序
-    global ASCENDING
+    global ASCENDING, SEGMENT_DURATION
     sort_order = args.sort_order
     if sort_order == 'desc' or args.descending:
         ASCENDING = False
+    if args.segment_duration is not None:
+        SEGMENT_DURATION = timedelta(minutes=args.segment_duration)
 
 
 def main(is_run_parallel: bool):
@@ -311,7 +338,9 @@ def main(is_run_parallel: bool):
         # utc_start = '2026-04-18 18:29:00+0800'
         argv = [
             *f'--regions {regions}'.split(' '),
+            '--ascending' if ASCENDING else '--descending',
             '--utc-start', utc_start,
+            '--segment-duration', str(int(SEGMENT_DURATION.total_seconds() // 60))
         ]
         if FIND_FIRST:
             argv.append('--find-first')

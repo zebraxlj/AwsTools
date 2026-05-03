@@ -2,7 +2,7 @@ import time
 
 import boto3
 import boto3.session
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple, Union
 
 from CloudWatch.cloud_watch_dataclass import FetchStats, StopReason
@@ -103,7 +103,6 @@ def filter_log_events(
         )
         events, next_tkn = response['events'], response.get('nextToken', '')
         iterations += 1
-        print('iter=', iterations, 'events=', events, 'next_tkn=', next_tkn)
         events_per_iteration.append(len(events))
         events_all += events
 
@@ -123,6 +122,79 @@ def filter_log_events(
         total_events=len(events_all),
         total_duration_ms=total_duration_ms,
         avg_iteration_ms=round(total_duration_ms / iterations, 2) if iterations > 0 else 0.0,
+        events_per_iteration=events_per_iteration,
+        stopped_by=stopped_by,
+    )
+
+    return events_all, stats
+
+
+def filter_log_events_descending(
+        aws_region: str, log_group_name: str, pattern: str = '',
+        dt_start: Optional[datetime] = None, dt_end: Optional[datetime] = None,
+        is_stop_on_match: bool = False,
+        stop_event=None,
+        client=None,
+        segment_duration: timedelta = timedelta(hours=1),
+) -> Tuple[List[dict], FetchStats]:
+    """倒序获取日志：将时间范围从后往前分段，每段调用 filter_log_events 正序拉取后反转。
+
+    Args:
+        aws_region: AWS 区域
+        log_group_name: 日志组名称
+        pattern: CloudWatch Filter Pattern
+        dt_start: 起始时间（UTC）
+        dt_end: 结束时间（UTC）
+        is_stop_on_match: 命中即停（找到最近一条匹配）
+        stop_event: 外部取消信号
+        client: 复用的 boto3 logs client
+        segment_duration: 每段时间长度，默认 1 小时
+    """
+    log_group_name = log_group_name if log_group_name.startswith('/aws/lambda/') else f'/aws/lambda/{log_group_name}'
+    if client is None:
+        env = AllEnvs.get_env_by_name(log_group_name.split('/')[-1].split('--')[0])
+        client = get_log_client(aws_region, env)
+
+    events_all: List[dict] = []
+    total_iterations = 0
+    events_per_iteration: List[int] = []
+    t_start = time.perf_counter()
+    stopped_by = StopReason.COMPLETED
+
+    seg_end = dt_end
+    while seg_end > dt_start:
+        seg_start = max(seg_end - segment_duration, dt_start)
+        seg_events, seg_stats = filter_log_events(
+            aws_region, log_group_name, pattern,
+            dt_start=seg_start, dt_end=seg_end,
+            is_stop_on_match=False,  # 段内需要拉完才能拿到最新的匹配
+            stop_event=stop_event,
+            client=client,
+        )
+        total_iterations += seg_stats.iterations
+        events_per_iteration.extend(seg_stats.events_per_iteration)
+
+        seg_events.reverse()  # 段内反转为降序
+        events_all.extend(seg_events)
+
+        if is_stop_on_match and seg_events:
+            # 段内最后一条（反转后的第一条）就是该段中最新的匹配
+            events_all = [events_all[0]]
+            stopped_by = StopReason.MATCH_FOUND
+            break
+
+        if stop_event is not None and stop_event.is_set():
+            stopped_by = StopReason.STOP_EVENT
+            break
+
+        seg_end = seg_start
+
+    total_duration_ms = round((time.perf_counter() - t_start) * 1000, 2)
+    stats = FetchStats(
+        iterations=total_iterations,
+        total_events=len(events_all),
+        total_duration_ms=total_duration_ms,
+        avg_iteration_ms=round(total_duration_ms / total_iterations, 2) if total_iterations > 0 else 0.0,
         events_per_iteration=events_per_iteration,
         stopped_by=stopped_by,
     )

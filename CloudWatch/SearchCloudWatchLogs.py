@@ -4,22 +4,21 @@ import multiprocessing
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 os.chdir('..')
 sys.path.append(os.getcwd())
 
-from CloudWatch.cloud_watch_helper import get_log_client, filter_log_events  # noqa: E402
+from CloudWatch.cloud_watch_dataclass import FilterLogEventsResp  # noqa: E402
+from CloudWatch.cloud_watch_helper import filter_log_events  # noqa: E402
+from utils import aws_urls  # noqa: E402
 from utils.aws_client_error_handler import print_err  # noqa: E402
-from utils.aws_consts import REGION_ABBR, REGION_TO_ABBR, AllEnvs  # noqa: E402
+from utils.aws_consts import REGION_ABBR, REGION_TO_ABBR  # noqa: E402
+from utils.exec_env_util import is_running_in_pycharm  # noqa: E402
 
 '''
-PartyAnimals--158820-StoreFunction
-PartyAnimals--159490-StoreFunction
-
-    PartyAnimals--160950-StoreFunction
 '''
 
 # region 脚本运行配置
@@ -38,10 +37,8 @@ REGIONS = [
     ]
 # DT_START_UTC = None
 # DT_END_UTC = None
-DT_START_UTC = datetime(2025, 10, 1)
-DT_END_UTC = datetime.utcnow()
-# DT_START_UTC = datetime(2025, 3, 27)
-# DT_END_UTC = datetime(2025, 4, 3)
+DT_START_UTC = datetime(2026, 4, 18, tzinfo=timezone.utc)
+DT_END_UTC = datetime.now(timezone.utc)
 ASCENDING = True  # filter_log_events 不支持排序，且默认顺序。当需要倒叙时，要用 describe_log_streams 倒叙获取日志
 FIND_FIRST = False
 # PATTERN = r'%bad publisher key%'
@@ -118,11 +115,13 @@ def process_print(
 
 def process_worker(
     log_group_name: str, region: str,
+    dt_start_utc: datetime, dt_end_utc: datetime,
     find_first: bool,
     shared_msg_dict: dict, shared_dict: Dict[str, list], stop_event,
 ):
+    fmt = '%Y-%m-%d %H:%M:%S.%f'
     def __gen_msg(msg: str):
-        return f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} > {msg}'
+        return f'{datetime.now().strftime(fmt)} > {msg}'
 
     worker_dt_start = datetime.now()
 
@@ -132,22 +131,21 @@ def process_worker(
     shared_dict[shared_key] = []
 
     # 获取日志
-    env = AllEnvs.get_env_by_name(log_group_name.split('/')[-1].split('--')[0])
-    client = get_log_client(region, env)
-    next_tkn = ''
-    while not stop_event.is_set():
-        kwargs = {'nextToken': next_tkn} if next_tkn else dict()
-        kwargs = {**kwargs, **({'filterPattern': PATTERN} if PATTERN else {})}
-
-        response = client.filter_log_events(logGroupName=log_group_name, **kwargs)
-        events, next_tkn = response['events'], response.get('nextToken', '')
-        if events:
-            print(events)
-            shared_dict[shared_key] += events
-            if find_first:
-                break
-        if not next_tkn:
-            break
+    events = filter_log_events(
+        region, log_group_name, PATTERN,
+        dt_start=dt_start_utc, dt_end=dt_end_utc,
+        is_stop_on_match=find_first,
+        stop_event=stop_event,
+    )
+    log_event_objs = [FilterLogEventsResp(**e) for e in events]
+    for e in log_event_objs:
+        event_ts = datetime.fromtimestamp(e.timestamp / 1000, tz=timezone.utc)
+        event_url = aws_urls.gen_cloud_watch_log_stream_url1(
+            log_group=log_group_name, log_rgn=region, log_stream=e.logStreamName,
+            timestamp=e.timestamp, event_id=e.eventId,
+        )
+        print(f'{datetime.strftime(event_ts, fmt)[:-3]}', f'{e.message.rstrip()}', f'{event_url}', sep='\t')
+    shared_dict[shared_key] = events
 
     worker_duration = (datetime.now() - worker_dt_start).total_seconds()
     shared_msg_dict[shared_key] = [__gen_msg(f'{shared_key}: 完成。耗时：{worker_duration}s 命中：{len(events)}')]
@@ -168,7 +166,11 @@ def run_parallel(log_group_names: List[str], regions: List[str]):
         for group_name in log_group_names:
             for rgn in regions:
                 process = multiprocessing.Process(
-                    target=process_worker, args=(group_name, rgn, FIND_FIRST, shared_msg_dict, shared_dict, stop_event)
+                    target=process_worker, args=(
+                        group_name, rgn,
+                        DT_START_UTC, DT_END_UTC, FIND_FIRST,
+                        shared_msg_dict, shared_dict, stop_event,
+                    )
                 )
                 processes.append(process)
                 process.start()
@@ -284,15 +286,17 @@ def __prepare_global_var(args):
         print_err(f'地区不支持：{bad_regions}')
         sys.exit(1)
 
-    arg_regions = [REGION_TO_ABBR.get(r, r) for r in arg_regions if r is not None]
+    arg_regions = [REGION_ABBR.get(r, r) for r in arg_regions if r is not None]
     REGIONS = sorted(r for r in arg_regions if r) if arg_regions else REGIONS
 
-    # # 处理时间
-    # if args.utc_start:
-    #
-    # if args.utc_end:
-    #     pass
-    #
+    # 处理时间
+    global DT_START_UTC, DT_END_UTC
+    fmt = '%Y-%m-%d %H:%M:%S%z'
+    if args.utc_start:
+        DT_START_UTC = datetime.strptime(args.utc_start, fmt)
+    if args.utc_end:
+        DT_END_UTC = datetime.strptime(args.utc_end, fmt)
+
     # 处理排序
     global ASCENDING
     sort_order = args.sort_order
@@ -301,7 +305,14 @@ def __prepare_global_var(args):
 
 
 def main(is_run_parallel: bool):
-    args = __parse_args(sys.argv[1:])
+    if is_running_in_pycharm():
+        regions = ' '.join(REGIONS)
+        utc_start = DT_START_UTC.strftime('%Y-%m-%d %H:%M:%S%z')
+        # utc_start = '2026-04-18 18:29:00+0800'
+        argv = f'--regions {regions}'.split(' ') + ['--utc-start', utc_start]
+    else:
+        argv = sys.argv[1:]
+    args = __parse_args(argv)
     __prepare_global_var(args)
 
     if is_run_parallel:

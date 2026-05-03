@@ -8,6 +8,7 @@ class StopReason(Enum):
     EMPTY_RESPONSE = 'empty_response'
     TOKEN_EXHAUSTED = 'token_exhausted'
     STOP_EVENT = 'stop_event'
+    MATCH_FOUND = 'match_found'
     COMPLETED = 'completed'
 
 

@@ -77,7 +77,7 @@ PATTERN = r'IdName code resp'
 
 
 def temp_event_tracking():
-    events = filter_log_events(
+    events, _ = filter_log_events(
         'cn-northwest-1', 'PartyAnimals-EventTrackingFunction', r'%lambda_handler .*?achievement_obtain%',
         datetime.strptime('2024-07-20 18:29:00+0800', '%Y-%m-%d %H:%M:%S%z'),
         datetime.strptime('2024-07-20 18:30:00+0800', '%Y-%m-%d %H:%M:%S%z'),
@@ -131,7 +131,7 @@ def process_worker(
     shared_dict[shared_key] = []
 
     # 获取日志
-    events = filter_log_events(
+    events, _stats = filter_log_events(
         region, log_group_name, PATTERN,
         dt_start=dt_start_utc, dt_end=dt_end_utc,
         is_stop_on_match=find_first,
@@ -203,7 +203,7 @@ def run_sequential(log_group_names: List[str], regions: List[str]):
             dt_start = datetime.now()
             print(f'开始：{name} {REGION_TO_ABBR.get(rgn, rgn)} {dt_start.strftime(fmt)}')
             try:
-                events = filter_log_events(
+                events, _ = filter_log_events(
                     rgn, name, PATTERN, dt_start=DT_START_UTC, dt_end=DT_END_UTC, is_stop_on_match=FIND_FIRST
                 )
             except Exception as e:
@@ -309,10 +309,16 @@ def main(is_run_parallel: bool):
         regions = ' '.join(REGIONS)
         utc_start = DT_START_UTC.strftime('%Y-%m-%d %H:%M:%S%z')
         # utc_start = '2026-04-18 18:29:00+0800'
-        argv = f'--regions {regions}'.split(' ') + ['--utc-start', utc_start]
+        argv = [
+            *f'--regions {regions}'.split(' '),
+            '--utc-start', utc_start,
+        ]
+        if FIND_FIRST:
+            argv.append('--find-first')
     else:
         argv = sys.argv[1:]
     args = __parse_args(argv)
+    print(f'args: {args}')
     __prepare_global_var(args)
 
     if is_run_parallel:

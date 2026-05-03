@@ -218,7 +218,7 @@ def handle_alert(
     env: Env = AllEnvs.get_env_by_name(env_name)
     client = get_log_client(alert_rgn, env)
 
-    events_all: List[dict] = filter_log_events(
+    events_all, _stats = filter_log_events(
         aws_region=alert_rgn,
         log_group_name=log_group,
         pattern=r'%\[ERROR\]%',
@@ -266,7 +266,7 @@ def handle_alert(
             patterns.append(rid_clean)
 
     for p in patterns:
-        events = filter_log_events(
+        events, _stats = filter_log_events(
             aws_region=alert_rgn,
             log_group_name=log_group,
             pattern=rf'%{p}%',

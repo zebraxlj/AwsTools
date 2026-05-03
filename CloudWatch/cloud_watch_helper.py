@@ -62,7 +62,7 @@ def filter_log_events(
         is_stop_on_match: bool = False,
         stop_event=None,
         client=None,
-        ) -> List[dict]:
+        ) -> Tuple[List[dict], FetchStats]:
     """从日志组获取所有
 
     Args:
@@ -74,7 +74,7 @@ def filter_log_events(
         is_stop_on_match (bool, optional): _description_. Defaults to False.
 
     Returns:
-        List[dict]: _description_
+        Tuple[List[dict], FetchStats]: _description_
     """
     log_group_name = log_group_name if log_group_name.startswith('/aws/lambda/') else f'/aws/lambda/{log_group_name}'
     if client is None:
@@ -83,6 +83,10 @@ def filter_log_events(
 
     next_tkn = ''
     events_all: List[dict] = []
+    iterations = 0
+    events_per_iteration: List[int] = []
+    t_start = time.perf_counter()
+
     while True:
         kwargs = dict()
         if dt_start is not None:
@@ -98,18 +102,32 @@ def filter_log_events(
             **kwargs
         )
         events, next_tkn = response['events'], response.get('nextToken', '')
-        # if events:
-        #     print(events)
+        iterations += 1
+        print('iter=', iterations, 'events=', events, 'next_tkn=', next_tkn)
+        events_per_iteration.append(len(events))
         events_all += events
 
         if is_stop_on_match and events:
+            stopped_by = StopReason.MATCH_FOUND
             break
         if not next_tkn:
+            stopped_by = StopReason.TOKEN_EXHAUSTED
             break
         if stop_event is not None and stop_event.is_set():
+            stopped_by = StopReason.STOP_EVENT
             break
 
-    return events_all
+    total_duration_ms = round((time.perf_counter() - t_start) * 1000, 2)
+    stats = FetchStats(
+        iterations=iterations,
+        total_events=len(events_all),
+        total_duration_ms=total_duration_ms,
+        avg_iteration_ms=round(total_duration_ms / iterations, 2) if iterations > 0 else 0.0,
+        events_per_iteration=events_per_iteration,
+        stopped_by=stopped_by,
+    )
+
+    return events_all, stats
 
 
 def get_log_events(

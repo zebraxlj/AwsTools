@@ -1,8 +1,11 @@
+import time
+
 import boto3
 import boto3.session
 from datetime import datetime
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
+from CloudWatch.cloud_watch_dataclass import FetchStats, StopReason
 from utils.aws_client_helper import get_aws_profile
 from utils.aws_consts import AllEnvs, Env
 from utils.proxy_helper import check_proxy
@@ -118,7 +121,7 @@ def get_log_events(
         limit: Optional[int] = None,
         startFromHead: bool = False,
         stop_event=None,
-) -> List[dict]:
+) -> Tuple[List[dict], FetchStats]:
     if isinstance(startTime, datetime):
         startTime = int(startTime.timestamp() * 1000)
     if isinstance(endTime, datetime):
@@ -126,6 +129,10 @@ def get_log_events(
 
     next_tkn = ''
     events_all: List[dict] = []
+    iterations = 0
+    events_per_iteration: List[int] = []
+    t_start = time.perf_counter()
+
     while True:
         kwargs = {}
         if logGroupName is not None:
@@ -140,19 +147,35 @@ def get_log_events(
             kwargs['limit'] = limit
         if startFromHead:
             kwargs['startFromHead'] = True
+
         response = client.get_log_events(logStreamName=logStreamName, **kwargs)
         events = response['events']
+        iterations += 1
+        events_per_iteration.append(len(events))
 
         if not events:
+            stopped_by = StopReason.EMPTY_RESPONSE
             break
-        events_all += response['events']
+        events_all += events
 
         next_tkn_curr = response['nextForwardToken'] if startFromHead else response['nextBackwardToken']
         if next_tkn_curr == next_tkn:
+            stopped_by = StopReason.TOKEN_EXHAUSTED
             break
         next_tkn = next_tkn_curr
 
         if stop_event is not None and stop_event.is_set():
+            stopped_by = StopReason.STOP_EVENT
             break
 
-    return events_all
+    total_duration_ms = round((time.perf_counter() - t_start) * 1000, 2)
+    stats = FetchStats(
+        iterations=iterations,
+        total_events=len(events_all),
+        total_duration_ms=total_duration_ms,
+        avg_iteration_ms=round(total_duration_ms / iterations, 2) if iterations > 0 else 0.0,
+        events_per_iteration=events_per_iteration,
+        stopped_by=stopped_by,
+    )
+
+    return events_all, stats

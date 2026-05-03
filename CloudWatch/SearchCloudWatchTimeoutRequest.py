@@ -66,7 +66,7 @@ def get_timeout_requests(
     client = get_log_client(aws_rgn, env)
 
     # Fetch all timeout events in the window
-    timeout_events_resp = filter_log_events(
+    timeout_events_resp, _stats = filter_log_events(
         aws_region=aws_rgn, log_group_name=log_group,
         pattern='Task timed out after',
         dt_start=dt_start, dt_end=dt_end,

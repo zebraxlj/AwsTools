@@ -141,7 +141,6 @@ def get_log_events(
         if startFromHead:
             kwargs['startFromHead'] = True
         response = client.get_log_events(logStreamName=logStreamName, **kwargs)
-        print(response)
         events = response['events']
 
         if not events:

@@ -1,6 +1,14 @@
 import dataclasses
 from datetime import datetime
+from enum import Enum
 from typing import Optional, List
+
+
+class StopReason(Enum):
+    EMPTY_RESPONSE = 'empty_response'
+    TOKEN_EXHAUSTED = 'token_exhausted'
+    STOP_EVENT = 'stop_event'
+    COMPLETED = 'completed'
 
 
 @dataclasses.dataclass(init=False)
@@ -37,3 +45,14 @@ class CloudWatchRequest:
     event_id: Optional[str] = None
     ts_end: Optional[int] = None
     url: Optional[str] = None
+
+
+@dataclasses.dataclass
+class FetchStats:
+    """Statistics collected during a paginated log-fetching loop."""
+    iterations: int = 0
+    total_events: int = 0
+    total_duration_ms: float = 0.0
+    avg_iteration_ms: float = 0.0
+    events_per_iteration: List[int] = dataclasses.field(default_factory=list)
+    stopped_by: StopReason = StopReason.COMPLETED

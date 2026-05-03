@@ -108,7 +108,7 @@ def get_timeout_requests(
     # Fetch full request logs by LogStream, RequestID, DtStart, DtEnd
     for i in range(len(timeout_requests)):
         req = timeout_requests[i]
-        events_resp = get_log_events(
+        events_resp, _ = get_log_events(
             client=client,
             logStreamName=req.log_stream,
             logGroupName=log_group,

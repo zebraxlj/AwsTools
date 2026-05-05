@@ -1,14 +1,39 @@
+import random
 import time
 
 import boto3
 import boto3.session
+from botocore.exceptions import ClientError
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 from CloudWatch.cloud_watch_dataclass import FetchStats, StopReason
 from utils.aws_client_helper import get_aws_profile
 from utils.aws_consts import AllEnvs, Env
 from utils.proxy_helper import check_proxy
+
+# CloudWatch Logs API 调用频率控制
+_API_CALL_INTERVAL = 0.2           # 每次 API 调用后的最小间隔（秒），用于主动限速
+
+# 限流重试配置（被动兜底，正常情况下不应触发）
+_THROTTLE_MAX_RETRIES = 6          # 最大重试次数
+_THROTTLE_BASE_DELAY = 1.0         # 基础延迟（秒）
+_THROTTLE_MAX_DELAY = 60.0         # 最大延迟（秒）
+
+
+def _call_with_throttle_retry(api_fn, **kwargs):
+    """调用 AWS API，遇到 ThrottlingException 时指数退避重试。"""
+    for attempt in range(_THROTTLE_MAX_RETRIES + 1):
+        try:
+            return api_fn(**kwargs)
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'ThrottlingException' and attempt < _THROTTLE_MAX_RETRIES:
+                delay = min(_THROTTLE_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1), _THROTTLE_MAX_DELAY)
+                print(f'[Throttled] {api_fn.__name__} attempt {attempt + 1}/{_THROTTLE_MAX_RETRIES}, '
+                      f'retrying in {delay:.1f}s ...')
+                time.sleep(delay)
+            else:
+                raise
 
 
 def describe_log_streams_all(aws_region: str, log_group_name: str, stop_event=None):
@@ -18,13 +43,20 @@ def describe_log_streams_all(aws_region: str, log_group_name: str, stop_event=No
 
     log_stream_all = []
     next_tkn = ''
+    iterations = 0
     while True:
         kwargs = dict()
         if next_tkn:
             kwargs['nextToken'] = next_tkn
-        response = client.describe_log_streams(
+
+        if iterations > 0 and _API_CALL_INTERVAL > 0:
+            time.sleep(_API_CALL_INTERVAL)
+
+        response = _call_with_throttle_retry(
+            client.describe_log_streams,
             logGroupName=log_group_name,
         )
+        iterations += 1
         log_streams, next_tkn = response['logStreams'], response.get('nextToken', '')
         log_stream_all += log_streams
 
@@ -97,7 +129,12 @@ def filter_log_events(
             kwargs['filterPattern'] = pattern
         if next_tkn:
             kwargs['nextToken'] = next_tkn
-        response = client.filter_log_events(
+
+        if iterations > 0 and _API_CALL_INTERVAL > 0:
+            time.sleep(_API_CALL_INTERVAL)
+
+        response = _call_with_throttle_retry(
+            client.filter_log_events,
             logGroupName=log_group_name,
             **kwargs
         )
@@ -136,6 +173,7 @@ def filter_log_events_descending(
         stop_event=None,
         client=None,
         segment_duration: timedelta = timedelta(hours=1),
+        on_receive_batch: Optional[Callable[[List[dict]], bool]] = None,
 ) -> Tuple[List[dict], FetchStats]:
     """倒序获取日志：将时间范围从后往前分段，每段调用 filter_log_events 正序拉取后反转。
 
@@ -145,10 +183,14 @@ def filter_log_events_descending(
         pattern: CloudWatch Filter Pattern
         dt_start: 起始时间（UTC）
         dt_end: 结束时间（UTC）
-        is_stop_on_match: 命中即停（找到最近一条匹配）
+        is_stop_on_match: 命中即停（找到最近一条匹配）。与 on_receive_batch 互斥，若同时提供则 on_receive_batch 优先。
         stop_event: 外部取消信号
         client: 复用的 boto3 logs client
         segment_duration: 每段时间长度，默认 1 小时
+        on_receive_batch: 每段处理完成后的回调。每处理完一个时间段后，将**该段的事件列表
+            （已按降序排列）**传入此函数。回调可用于收集、过滤、统计、打印进度等。
+            签名: (seg_events_desc: List[dict]) -> bool
+            返回 True 表示应当停止搜索。
     """
     log_group_name = log_group_name if log_group_name.startswith('/aws/lambda/') else f'/aws/lambda/{log_group_name}'
     if client is None:
@@ -177,7 +219,12 @@ def filter_log_events_descending(
         seg_events.reverse()  # 段内反转为降序
         events_all.extend(seg_events)
 
-        if is_stop_on_match and seg_events:
+        if on_receive_batch is not None:
+            # 自定义回调优先于 is_stop_on_match
+            if seg_events and on_receive_batch(seg_events):
+                stopped_by = StopReason.ON_RECEIVE_BATCH
+                break
+        elif is_stop_on_match and seg_events:
             # 段内最后一条（反转后的第一条）就是该段中最新的匹配
             events_all = [events_all[0]]
             stopped_by = StopReason.MATCH_FOUND
@@ -238,7 +285,10 @@ def get_log_events(
         if startFromHead:
             kwargs['startFromHead'] = True
 
-        response = client.get_log_events(logStreamName=logStreamName, **kwargs)
+        if iterations > 0 and _API_CALL_INTERVAL > 0:
+            time.sleep(_API_CALL_INTERVAL)
+
+        response = _call_with_throttle_retry(client.get_log_events, logStreamName=logStreamName, **kwargs)
         events = response['events']
         iterations += 1
         events_per_iteration.append(len(events))

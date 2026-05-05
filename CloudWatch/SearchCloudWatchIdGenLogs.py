@@ -3,7 +3,12 @@
 按 (日志组, 该日志组中的 ID 类型列表) 进行倒序搜索，
 使用 on_receive_batch 回调逐段解析，每种类型只保留最新一条，
 该日志组的所有类型都找到后提前停止。
+
+输出文件：
+- 运行输出文件: {DATA_DIR}/IdGen_{timestamp}_run.log     各 worker 的运行日志
+- 日志数据文件: {DATA_DIR}/IdGen_{timestamp}_data.csv    拉取到的日志数据
 """
+import csv
 import multiprocessing
 import os
 import re
@@ -11,9 +16,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-os.chdir('..')
-sys.path.append(os.getcwd())
+__SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+__PROJ_DIR = os.path.dirname(__SCRIPT_DIR)
+if __PROJ_DIR not in sys.path:
+    sys.path.insert(0, __PROJ_DIR)
 
 from CloudWatch.cloud_watch_dataclass import FilterLogEventsResp  # noqa: E402
 from CloudWatch.cloud_watch_helper import filter_log_events_descending  # noqa: E402
@@ -97,7 +103,42 @@ PATTERN = r'id_generator new id'
 # ID 类型提取正则，需要有一个捕获组
 # 匹配日志格式: "id_generator.py:101 ⫸ new id: PartyAnimals_OrderId = 7769672"
 ID_TYPE_REGEX = r'new id:\s*(\S+)\s*='
+
+# 输出目录
+DATA_DIR = os.path.join(__PROJ_DIR, 'CloudWatch', 'Data', 'IdGenLog')
 # endregion 脚本运行配置
+
+
+# region 文件输出
+
+FMT_DT_FILE = '%Y%m%d-%H%M%S'
+FMT_DT_CONTENT = '%Y-%m-%d %H:%M:%S.%f'
+
+
+def _ensure_dir(dir_path: str):
+    if dir_path and not os.path.exists(dir_path):
+        os.makedirs(dir_path, exist_ok=True)
+
+
+def save_data_csv(file_path: str, rows: List[dict]):
+    """保存日志数据到 CSV 文件。"""
+    header = ['DateTime', 'Region', 'IdType', 'Msg', 'Url']
+    _ensure_dir(os.path.dirname(file_path))
+    with open(file_path, 'w', newline='', encoding='utf8') as f_out:
+        writer = csv.DictWriter(f_out, quotechar='"', fieldnames=header)
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f'Data CSV saved: {file_path} ({len(rows)} rows)')
+
+
+def save_run_log(file_path: str, lines: List[str]):
+    """保存运行输出到 log 文件。"""
+    _ensure_dir(os.path.dirname(file_path))
+    with open(file_path, 'w', encoding='utf8') as f_out:
+        f_out.write('\n'.join(lines))
+    print(f'Run log saved: {file_path} ({len(lines)} lines)')
+
+# endregion 文件输出
 
 
 # region on_receive_batch 回调工厂
@@ -148,7 +189,8 @@ def process_worker(
     segment_duration: timedelta,
     shared_msg_dict: dict, shared_dict: Dict[str, list], stop_event,
 ):
-    fmt = '%Y-%m-%d %H:%M:%S.%f'
+    fmt = FMT_DT_CONTENT
+
     def __gen_msg(msg: str):
         return f'{datetime.now().strftime(fmt)} > {msg}'
 
@@ -168,32 +210,44 @@ def process_worker(
         on_receive_batch=on_receive_batch,
     )
 
-    # 从回调中提取每种 ID 类型的最新一条，按时间升序输出
-    result_events = list(on_receive_batch.found_types.values())
-    result_events.sort(key=lambda e: e.get('timestamp', 0))
+    # 从回调的 found_types 中提取结果，按时间升序构建 CSV 行
+    found_items = sorted(on_receive_batch.found_types.items(), key=lambda kv: kv[1].get('timestamp', 0))
 
-    log_event_objs = [FilterLogEventsResp(**e) for e in result_events]
-    for e in log_event_objs:
+    csv_rows = []
+    for id_type_name, event in found_items:
+        e = FilterLogEventsResp(**event)
         event_ts = datetime.fromtimestamp(e.timestamp / 1000, tz=timezone.utc)
         event_url = aws_urls.gen_cloud_watch_log_stream_url1(
             log_group=log_group_name, log_rgn=region, log_stream=e.logStreamName,
             timestamp=e.timestamp, event_id=e.eventId,
         )
-        print(f'{datetime.strftime(event_ts, fmt)[:-3]}', f'{e.message.rstrip()}', f'{event_url}', sep='\t')
-    shared_dict[shared_key] = result_events
+        msg_clean = e.message.rstrip()
+        csv_rows.append({
+            'DateTime': event_ts.isoformat(timespec='milliseconds'),
+            'Region': REGION_TO_ABBR.get(region, region),
+            'IdType': id_type_name,
+            'Msg': msg_clean,
+            'Url': event_url,
+        })
+        print(f'{datetime.strftime(event_ts, fmt)[:-3]}', f'{msg_clean}', f'{event_url}', sep='\t')
+
+    shared_dict[shared_key] = csv_rows
 
     found = list(on_receive_batch.found_types.keys())
     missing = [t for t in known_types if t not in on_receive_batch.found_types]
     worker_duration = (datetime.now() - worker_dt_start).total_seconds()
-    shared_msg_dict[shared_key] = [__gen_msg(
+    finish_msg = __gen_msg(
         f'{shared_key}: 完成。耗时：{worker_duration:.3f}s 任务总结：{_stats}'
         f' 找到({len(found)}/{len(known_types)})：{found}'
         + (f' 未找到：{missing}' if missing else '')
-    )]
-    print(shared_msg_dict[shared_key])
+    )
+    shared_msg_dict[shared_key] = [shared_msg_dict[shared_key][0], finish_msg]
+    print(finish_msg)
 
 
 def run_parallel():
+    run_timestamp = datetime.now().strftime(FMT_DT_FILE)
+
     stop_event = multiprocessing.Event()
     with multiprocessing.Manager() as manager:
         shared_msg_dict = manager.dict()
@@ -223,6 +277,24 @@ def run_parallel():
             for process in processes:
                 process.join()
         print("All Processes completed.")
+
+        # 收集运行输出
+        run_lines = []
+        for key in sorted(shared_msg_dict.keys()):
+            for line in shared_msg_dict[key]:
+                run_lines.append(line)
+
+        # 收集日志数据
+        all_csv_rows = []
+        for key in sorted(shared_dict.keys()):
+            all_csv_rows.extend(shared_dict[key])
+        all_csv_rows.sort(key=lambda r: r.get('DateTime', ''))
+
+    # 保存文件
+    run_log_path = os.path.join(DATA_DIR, f'IdGen_{run_timestamp}_run.log')
+    data_csv_path = os.path.join(DATA_DIR, f'IdGen_{run_timestamp}_data.csv')
+    save_run_log(run_log_path, run_lines)
+    save_data_csv(data_csv_path, all_csv_rows)
 
 
 if __name__ == '__main__':

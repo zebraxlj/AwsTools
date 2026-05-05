@@ -9,6 +9,7 @@ class StopReason(Enum):
     TOKEN_EXHAUSTED = 'token_exhausted'
     STOP_EVENT = 'stop_event'
     MATCH_FOUND = 'match_found'
+    ON_RECEIVE_BATCH = 'on_receive_batch'
     COMPLETED = 'completed'
 
 
@@ -57,3 +58,10 @@ class FetchStats:
     avg_iteration_ms: float = 0.0
     events_per_iteration: List[int] = dataclasses.field(default_factory=list)
     stopped_by: StopReason = StopReason.COMPLETED
+
+    def __repr__(self):
+        return (
+            f'耗时={(self.total_duration_ms / 1000):.3f}s 命中={self.total_events} '
+            f'迭代={self.iterations} 迭代平均耗时={self.avg_iteration_ms}ms '
+            f'最终状态={self.stopped_by.name}'
+        )

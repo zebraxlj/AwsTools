@@ -30,6 +30,76 @@ QScrollArea {
     background: transparent;
     border: none;
 }
+QScrollArea > QWidget > QWidget {
+    background: transparent;
+}
+
+/* 滚动条 — Material Design 3 风格 */
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+    border: none;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #cac4d0;
+    border-radius: 4px;
+    min-height: 40px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #79747e;
+}
+
+QScrollBar::handle:vertical:pressed {
+    background-color: #625b71;
+}
+
+/* 隐藏上下箭头和空白区域 */
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+    border: none;
+}
+
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+
+/* 水平滚动条同理 */
+QScrollBar:horizontal {
+    background: transparent;
+    height: 8px;
+    margin: 0;
+    border: none;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #cac4d0;
+    border-radius: 4px;
+    min-width: 40px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: #79747e;
+}
+
+QScrollBar::handle:horizontal:pressed {
+    background-color: #625b71;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0;
+    border: none;
+}
+
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    background: transparent;
+}
 
 
 /* ════════════════════════════════════════════════════════
@@ -91,6 +161,7 @@ QPushButton#toggleBtn {
     border-radius: 17px;
     padding: 8px 20px;
     font-size: 14px;
+    font-weight: bold;
 }
 QPushButton#toggleBtn:hover  { background-color: #dbd4e0; }
 QPushButton#toggleBtn:pressed { background-color: #cfc8d4; }
@@ -190,6 +261,16 @@ QPushButton#cmdBtn:hover {
     color: #6750a4;
 }
 QPushButton#cmdBtn:pressed { background-color: #d8cee8; }
+
+/* Tooltip — Material Design 3 Inverse Surface */
+QToolTip {
+    background-color: #322f35;
+    color: #f4eff4;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 12px;
+}
 
 /* Profile 名称 */
 QLabel#profileName {

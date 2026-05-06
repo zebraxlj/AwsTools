@@ -73,8 +73,9 @@ class MfaWidget(QWidget):
         root_layout.setContentsMargins(20, 16, 20, 16)
         root_layout.setSpacing(12)
 
-        # 顶部工具栏
+        # 顶部工具栏（左右 4px 与滚动区域内的卡片对齐）
         header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(4, 0, 4, 0)
         header_layout.setSpacing(12)
 
         title = QLabel("AWS MFA Manager")

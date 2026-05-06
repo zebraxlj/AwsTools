@@ -38,6 +38,23 @@ def get_fleet_address(region: str, fleet_id: str) -> str:
         return f'https://{region}.console.aws.amazon.com/gamelift/fleets/view/{fleet_id}?region={region}'
 
 
+def get_iam_role_url(role_arn: str) -> str:
+    """
+    根据 Role ARN 生成 AWS IAM 控制台的 Role 页面 URL。
+    ARN 格式: arn:aws(-cn):iam::ACCOUNT_ID:role/ROLE_NAME
+    """
+    # arn:aws-cn:iam::878457991216:role/AwsTools
+    parts = role_arn.split(":")
+    partition = parts[1]          # "aws" or "aws-cn"
+    role_name = parts[5]          # "role/AwsTools"
+    if not role_name.startswith("role/"):
+        raise ValueError(f"Unexpected role ARN format: {role_arn}")
+    role_name = role_name[len("role/"):]
+    host = "console.amazonaws.cn" if partition == "aws-cn" else "console.aws.amazon.com"
+
+    return f"https://{host}/iam/home#/roles/details/{role_name}?section=permissions"
+
+
 def get_lambda_function_url(region: str, function_name):
     region = region
     if 'cn' in region:

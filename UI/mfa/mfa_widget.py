@@ -1,29 +1,64 @@
 """
-MFA 标签页 Widget：纯 UI 布局和渲染，不包含业务逻辑。
-所有数据操作通过 MfaController 完成。
+MFA 标签页 Widget：Material Design 风格。
+区域（CN/US）为大卡片容器，Profile 为其中的子卡片。
+
+本文件不调用任何 setStyleSheet —— 所有样式由 app.py 加载的 theme.qss 统一控制。
 """
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame,
+    QGraphicsDropShadowEffect,
 )
+from PyQt5.QtGui import QColor
 
 from UI.mfa.mfa_controller import MfaController, GroupedProfiles
 from UI.mfa.profile_card import ProfileCard
-from UI.styles import (
-    HEADER_STYLE, RELOAD_BTN_STYLE,
-    TOGGLE_BTN_ON_STYLE, TOGGLE_BTN_OFF_STYLE,
-    GROUP_HEADER_STYLE, SEPARATOR_STYLE,
-)
+
+
+def _make_elevation_shadow(elevation: int = 2) -> QGraphicsDropShadowEffect:
+    """创建 Material Design elevation 阴影效果"""
+    shadow = QGraphicsDropShadowEffect()
+    shadow.setBlurRadius(elevation * 6)
+    shadow.setOffset(0, elevation * 1.5)
+    shadow.setColor(QColor(0, 0, 0, 30 + elevation * 8))
+    return shadow
+
+
+class RegionCard(QFrame):
+    """区域大卡片容器（Surface）"""
+
+    def __init__(self, label: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("regionCard")
+        self.setGraphicsEffect(_make_elevation_shadow(2))
+
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(20, 16, 20, 12)
+        self._layout.setSpacing(0)
+
+        header = QLabel(label)
+        header.setObjectName("regionHeader")
+        self._layout.addWidget(header)
+        self._layout.addSpacing(8)
+
+    def add_profile_card(self, card: QFrame, is_first: bool):
+        if not is_first:
+            divider = QFrame()
+            divider.setObjectName("profileDivider")
+            divider.setFrameShape(QFrame.HLine)
+            divider.setFixedHeight(1)
+            self._layout.addWidget(divider)
+        self._layout.addWidget(card)
 
 
 class MfaWidget(QWidget):
-    """MFA 管理标签页，可嵌入 QTabWidget 或作为独立 dialog"""
+    """MFA 管理标签页"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._cards: dict[str, ProfileCard] = {}  # session_name -> ProfileCard
+        self._cards: dict[str, ProfileCard] = {}
         self._controller = MfaController(self)
 
         self._build_ui()
@@ -35,24 +70,26 @@ class MfaWidget(QWidget):
 
     def _build_ui(self):
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(16, 16, 16, 16)
+        root_layout.setContentsMargins(20, 16, 20, 16)
         root_layout.setSpacing(12)
 
-        # 顶部栏
+        # 顶部工具栏
         header_layout = QHBoxLayout()
+        header_layout.setSpacing(12)
 
         title = QLabel("AWS MFA Manager")
-        title.setStyleSheet(HEADER_STYLE)
+        title.setObjectName("headerTitle")
         header_layout.addWidget(title)
 
         header_layout.addStretch()
 
         self.reload_btn = QPushButton("↻ 重新加载")
-        self.reload_btn.setStyleSheet(RELOAD_BTN_STYLE)
+        self.reload_btn.setObjectName("reloadBtn")
         self.reload_btn.setCursor(Qt.PointingHandCursor)
         header_layout.addWidget(self.reload_btn)
 
         self.toggle_btn = QPushButton("☆ 仅收藏")
+        self.toggle_btn.setObjectName("toggleBtn")
         self.toggle_btn.setCursor(Qt.PointingHandCursor)
         header_layout.addWidget(self.toggle_btn)
 
@@ -66,53 +103,40 @@ class MfaWidget(QWidget):
 
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
-        self.scroll_layout.setContentsMargins(0, 0, 0, 0)
-        self.scroll_layout.setSpacing(8)
+        self.scroll_layout.setContentsMargins(4, 4, 4, 4)
+        self.scroll_layout.setSpacing(16)
         self.scroll_layout.addStretch()
 
         scroll.setWidget(self.scroll_content)
         root_layout.addWidget(scroll)
 
     def _connect_signals(self):
-        """连接 controller 信号和 UI 事件"""
-        # controller → widget
         self._controller.profiles_changed.connect(self._on_profiles_changed)
         self._controller.mfa_result.connect(self._on_mfa_result)
-
-        # UI 事件 → controller
         self.reload_btn.clicked.connect(self._controller.load_profiles)
         self.toggle_btn.clicked.connect(self._controller.toggle_starred_filter)
 
     # ── 渲染 ─────────────────────────────────────────────
 
     def _on_profiles_changed(self, data: GroupedProfiles, show_starred_only: bool):
-        """controller 通知数据变化，重建卡片列表"""
         self._update_toggle_btn(show_starred_only)
         self._rebuild_cards(data)
 
     def _rebuild_cards(self, data: GroupedProfiles):
-        """根据分组数据重建所有卡片"""
         self._clear_scroll_layout()
         self._cards.clear()
 
         for group_label, items in data.groups:
-            # 分组标题
-            label = QLabel(group_label)
-            label.setStyleSheet(GROUP_HEADER_STYLE)
-            self.scroll_layout.addWidget(label)
+            region_card = RegionCard(group_label)
 
-            for profile, is_starred in items:
+            for i, (profile, is_starred) in enumerate(items):
                 card = ProfileCard(profile, is_starred)
                 card.star_toggled.connect(self._controller.toggle_profile_star)
                 card.mfa_submitted.connect(self._controller.submit_mfa)
-                self.scroll_layout.addWidget(card)
+                region_card.add_profile_card(card, is_first=(i == 0))
                 self._cards[profile.session_name] = card
 
-            # 分隔线
-            sep = QFrame()
-            sep.setFrameShape(QFrame.HLine)
-            sep.setStyleSheet(SEPARATOR_STYLE)
-            self.scroll_layout.addWidget(sep)
+            self.scroll_layout.addWidget(region_card)
 
         self.scroll_layout.addStretch()
 
@@ -124,23 +148,27 @@ class MfaWidget(QWidget):
                 widget.deleteLater()
 
     def _update_toggle_btn(self, show_starred_only: bool):
+        """通过 Qt dynamic property 切换样式，不调用 setStyleSheet"""
         if show_starred_only:
             self.toggle_btn.setText("⭐ 仅收藏")
-            self.toggle_btn.setStyleSheet(TOGGLE_BTN_ON_STYLE)
+            self.toggle_btn.setProperty("active", True)
         else:
             self.toggle_btn.setText("☆ 仅收藏")
-            self.toggle_btn.setStyleSheet(TOGGLE_BTN_OFF_STYLE)
+            self.toggle_btn.setProperty("active", False)
+
+        # 通知 Qt 重新匹配样式规则
+        self.toggle_btn.style().unpolish(self.toggle_btn)
+        self.toggle_btn.style().polish(self.toggle_btn)
+        self.toggle_btn.update()
 
     # ── MFA 结果 ─────────────────────────────────────────
 
     def _on_mfa_result(self, profile_name: str, success: bool, error_message: str):
-        """controller 通知 MFA 验证结果，更新对应卡片"""
         card = self._cards.get(profile_name)
         if card is None:
             return
 
         if success:
-            # 数据已被 controller 更新，刷新卡片显示
             profile = self._controller.get_profile(profile_name)
             if profile:
                 card.update_profile(profile)

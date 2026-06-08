@@ -1,11 +1,10 @@
 import argparse
-import json
 import multiprocessing
 import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 os.chdir('..')
@@ -18,109 +17,44 @@ from utils.aws_client_error_handler import print_err  # noqa: E402
 from utils.aws_consts import REGION_ABBR, REGION_TO_ABBR  # noqa: E402
 from utils.exec_env_util import is_running_in_pycharm  # noqa: E402
 
-'''
-'''
-
-# region 脚本运行配置
-LOG_GROUP_NAMES = [
+# region 默认值（仅当 PyCharm 直接 Run 时使用，命令行运行需通过参数传入）
+DEFAULT_LOG_GROUP_NAMES: List[str] = [
     name.strip() for name in
     '''
     NemoDev-trunk--47607-LoginFunction
     '''.split('\n')
     if name.strip()
 ]
-REGIONS = [
+DEFAULT_REGIONS: List[str] = [
     'cn-northwest-1',
     # 'ap-northeast-1',
     # 'eu-central-1',
     # 'us-east-1',
-    ]
-# DT_START_UTC = None
-# DT_END_UTC = None
-DT_START_UTC = datetime(2026, 4, 18, tzinfo=timezone.utc)
-DT_END_UTC = datetime(2026, 4, 22, tzinfo=timezone.utc)
-ASCENDING = False  # False 时使用 filter_log_events_descending：将时间范围从后往前分段，每段调用 filter_log_events 后反转，实现倒序
-FIND_FIRST = True
-SEGMENT_DURATION = timedelta(hours=24)  # 倒序搜索时每段的时间长度
-# PATTERN = r'%bad publisher key%'
-# PATTERN = r'request = Operation ClaimBpLoginRewardAfterFinish AccountId QGH43Y'
-# PATTERN = r'%\[ERROR\]%'
-
-# PATTERN = r'AWS.SimpleQueueService.NonExistentQueue'
-# PATTERN = r' body event is Operation MiniGameSettle Info AccountId LiarGame MiniGameSettleModelDict AcctGameScoreList'
-
-# 检查 steam 账户货币
-# PATTERN = r'get_player_steam_currency_type Steam get user info timeout'  #      NX:27452  JP:7      EU:92     US:24
-# PATTERN = r'START STORE LOGIC is sqs False body event is Query currencyType'  # NX:462502 JP:148510 EU:112354 US:130949
-
-# 检查 steam 现金购买
-# PATTERN = r'START STORE LOGIC request Query mutation createCashProductTxn'  # NX:7228 JP:824 EU:285 US:374
-# PATTERN = r'FriendPass Player use this func'  #                               NX:0    JP:3   EU:0   US:0
-# PATTERN = r'Now cash product can not be sent'  #                              NX:0    JP:0   EU:0   US:0
-# PATTERN = r'Platform type not match'  #                                       NX:0    JP:0   EU:0   US:0
-# PATTERN = r'Only can buy cash product through this API'  #                    NX:0    JP:0   EU:0   US:0
-# PATTERN = r'Only can input one product'  #                                    NX:0    JP:0   EU:0   US:0
-# PATTERN = r'User transaction is banned by Steam'  #                           NX:42   JP:15  EU:0   US:0
-# PATTERN = r'GraphQLError code is 2106 message is Steam get user info Exception is The read operation timed out'  # NX:6269 JP:27 EU:48 US:21  这个是几个方法共用的
-
-# PATTERN = r'Finalize order sent to Steam but Steam is processing before time out need AWS SQS operation'
-
-# PATTERN = r'START LOGIN LOGIC body event is platformId sessionTicket'  # NX:639920  JP: EU: US:
-
-# ISteamUser/CheckAppOwnership/v2/
-# PATTERN = r'ERROR check_app_ownership Bad Resp'  #                       NX:0       JP: EU: US:
-# PATTERN = r'ERROR check_app_ownership missing ownersteamid'  #           NX:0       JP: EU: US:
-# PATTERN = r'ERROR check_app_ownership code header body'  #               NX:42      JP: EU: US:
-
-PATTERN = r'IdName code resp'
-
-# endregion 脚本运行配置
-
-
-def temp_event_tracking():
-    events, _ = filter_log_events(
-        'cn-northwest-1', 'PartyAnimals-EventTrackingFunction', r'%lambda_handler .*?achievement_obtain%',
-        datetime.strptime('2024-07-20 18:29:00+0800', '%Y-%m-%d %H:%M:%S%z'),
-        datetime.strptime('2024-07-20 18:30:00+0800', '%Y-%m-%d %H:%M:%S%z'),
-    )
-    # print(json.dumps(events, indent=4))
-    for e in events:
-        body = e["message"].split("'body': '")[1].split("',")[0].replace("\\\\", "\\")
-        print(body)
-        body_dict = json.loads(body)
-        print(json.dumps(body_dict, indent=4))
-
-    # m = events[-1]["message"].split("body/event is ")[1]
-    # print(m)
-    # print(json.loads(m))
-
-    # d = json.loads('{"Query": "mutation { trackAchievementObtainList(eventStrList: [\\"{\\\\\\"acct_id\\\\\\": \\\\\\"Q7X9EK\\\\\\", \\\\\\"properties\\\\\\": {\\\\\\"app_version_int\\\\\\": 128820, \\\\\\"level\\\\\\": 1, \\\\\\"session_id\\\\\\": \\\\\\"Q7X9EK_V/Vo9I\\\\\\", \\\\\\"is_friend_pass\\\\\\": false, \\\\\\"is_family_share\\\\\\": true, \\\\\\"gateway_region\\\\\\": \\\\\\"cn-northwest-1\\\\\\", \\\\\\"achv_id\\\\\\": \\\\\\"ACV010\\\\\\", \\\\\\"currency_before\\\\\\": 0, \\\\\\"currency_after\\\\\\": 0, \\\\\\"kart_gear_before\\\\\\": 0, \\\\\\"kart_gear_after\\\\\\": 0, \\\\\\"nemo_buck_before\\\\\\": 0, \\\\\\"nemo_buck_after\\\\\\": 0, \\\\\\"rewards\\\\\\": [{\\\\\\"item_id\\\\\\": \\\\\\"PF0009@1.0\\\\\\", \\\\\\"item_qty\\\\\\": 1}]}, \\\\\\"time\\\\\\": 1721469035.702602, \\\\\\"uuid\\\\\\": \\\\\\"6639be7a-8f6c-4c35-8453-5b39df358529\\\\\\", \\\\\\"event_name\\\\\\": \\\\\\"achievement_obtain\\\\\\"}\\"]) {ok} }", "queueUrl": "https://cn-northwest-1.queue.amazonaws.com.cn/471636885451/PartyAnimals-EventTrkSqsQueue1"}')
-    # d = json.loads('{"Query": "mutation { trackAchievementObtainList(eventStrList: [\\"{\\\\\\"acct_id\\\\\\": \\\\\\"H6GVCC\\\\\\", \\\\\\"properties\\\\\\": {\\\\\\"app_version_int\\\\\\": 128820, \\\\\\"level\\\\\\": 100, \\\\\\"session_id\\\\\\": \\\\\\"H6GVCC_V/Vo9I\\\\\\", \\\\\\"is_friend_pass\\\\\\": false, \\\\\\"is_family_share\\\\\\": false, \\\\\\"gateway_region\\\\\\": \\\\\\"cn-northwest-1\\\\\\", \\\\\\"achv_id\\\\\\": \\\\\\"ACV103\\\\\\", \\\\\\"currency_before\\\\\\": 1275589, \\\\\\"currency_after\\\\\\": 1275589, \\\\\\"kart_gear_before\\\\\\": 600, \\\\\\"kart_gear_after\\\\\\": 600, \\\\\\"nemo_buck_before\\\\\\": 8072, \\\\\\"nemo_buck_after\\\\\\": 8172, \\\\\\"rewards\\\\\\": []}, \\\\\\"time\\\\\\": 1721471341.304736, \\\\\\"uuid\\\\\\": \\\\\\"066f36b9-62e0-405f-ab6c-357a10a5e7cb\\\\\\", \\\\\\"event_name\\\\\\": \\\\\\"achievement_obtain\\\\\\"}\\"]) {ok} }", "queueUrl": "https://cn-northwest-1.queue.amazonaws.com.cn/471636885451/PartyAnimals-EventTrkSqsQueue1"}')
-    # print(json.dumps(d, indent=4))
-    # sql = d['Query']
+]
+DEFAULT_DT_START_UTC: Optional[datetime] = datetime(2026, 4, 18, tzinfo=timezone.utc)
+DEFAULT_DT_END_UTC: Optional[datetime] = datetime(2026, 4, 22, tzinfo=timezone.utc)
+DEFAULT_ASCENDING = False
+DEFAULT_FIND_FIRST = True
+DEFAULT_SEGMENT_DURATION_MIN = 24 * 60
+DEFAULT_PATTERN = r'IdName code resp'
+# endregion 默认值
 
 
 def process_print(
     shared_msg_dict: Dict[str, str], shared_dict: Dict[str, list], stop_event
 ):
     while not stop_event.is_set():
-        # sys_type = platform.system()
-        # if sys_type == 'Windows':
-        #     os.system('cls')
-        # else:
-        #     os.system('clear')
-        # for k, v in shared_msg_dict.items():
-        #     print(k, v)
         time.sleep(10)
 
 
 def process_worker(
-    log_group_name: str, region: str,
-    dt_start_utc: datetime, dt_end_utc: datetime,
+    log_group_name: str, region: str, pattern: str,
+    dt_start_utc: Optional[datetime], dt_end_utc: Optional[datetime],
     ascending: bool, find_first: bool, segment_duration: timedelta,
     shared_msg_dict: dict, shared_dict: Dict[str, list], stop_event,
 ):
     fmt = '%Y-%m-%d %H:%M:%S.%f'
+
     def __gen_msg(msg: str):
         return f'{datetime.now().strftime(fmt)} > {msg}'
 
@@ -131,10 +65,9 @@ def process_worker(
     print(shared_msg_dict[shared_key])
     shared_dict[shared_key] = []
 
-    # 获取日志
     if not ascending and find_first:
         events, _stats = filter_log_events_descending(
-            region, log_group_name, PATTERN,
+            region, log_group_name, pattern,
             dt_start=dt_start_utc, dt_end=dt_end_utc,
             is_stop_on_match=True,
             stop_event=stop_event,
@@ -142,7 +75,7 @@ def process_worker(
         )
     else:
         events, _stats = filter_log_events(
-            region, log_group_name, PATTERN,
+            region, log_group_name, pattern,
             dt_start=dt_start_utc, dt_end=dt_end_utc,
             is_stop_on_match=find_first,
             stop_event=stop_event,
@@ -165,10 +98,11 @@ def process_worker(
     print(shared_msg_dict[shared_key])
 
 
-def run_parallel(log_group_names: List[str], regions: List[str]):
-    log_group_names = log_group_names if log_group_names else LOG_GROUP_NAMES
-    regions = regions if regions else REGIONS
-
+def run_parallel(
+    log_group_names: List[str], regions: List[str], pattern: str,
+    dt_start_utc: Optional[datetime], dt_end_utc: Optional[datetime],
+    ascending: bool, find_first: bool, segment_duration: timedelta,
+):
     stop_event = multiprocessing.Event()
     with multiprocessing.Manager() as manager:
         shared_msg_dict = manager.dict()
@@ -179,8 +113,8 @@ def run_parallel(log_group_names: List[str], regions: List[str]):
             for rgn in regions:
                 process = multiprocessing.Process(
                     target=process_worker, args=(
-                        group_name, rgn,
-                        DT_START_UTC, DT_END_UTC, ASCENDING, FIND_FIRST, SEGMENT_DURATION,
+                        group_name, rgn, pattern,
+                        dt_start_utc, dt_end_utc, ascending, find_first, segment_duration,
                         shared_msg_dict, shared_dict, stop_event,
                     )
                 )
@@ -205,26 +139,27 @@ def run_parallel(log_group_names: List[str], regions: List[str]):
         print("All Processes completed.")
 
 
-def run_sequential(log_group_names: List[str], regions: List[str]):
-    log_group_names = log_group_names if log_group_names else LOG_GROUP_NAMES
-    regions = regions if regions else REGIONS
-
+def run_sequential(
+    log_group_names: List[str], regions: List[str], pattern: str,
+    dt_start_utc: Optional[datetime], dt_end_utc: Optional[datetime],
+    ascending: bool, find_first: bool, segment_duration: timedelta,
+):
     fmt = "%Y-%m-%d %H:%M:%S"
     for name in log_group_names:
         for rgn in regions:
             dt_start = datetime.now()
             print(f'开始：{name} {REGION_TO_ABBR.get(rgn, rgn)} {dt_start.strftime(fmt)}')
             try:
-                if not ASCENDING and FIND_FIRST:
+                if not ascending and find_first:
                     events, _ = filter_log_events_descending(
-                        rgn, name, PATTERN, dt_start=DT_START_UTC, dt_end=DT_END_UTC, is_stop_on_match=True,
-                        segment_duration=SEGMENT_DURATION,
+                        rgn, name, pattern, dt_start=dt_start_utc, dt_end=dt_end_utc, is_stop_on_match=True,
+                        segment_duration=segment_duration,
                     )
                 else:
                     events, _ = filter_log_events(
-                        rgn, name, PATTERN, dt_start=DT_START_UTC, dt_end=DT_END_UTC, is_stop_on_match=FIND_FIRST
+                        rgn, name, pattern, dt_start=dt_start_utc, dt_end=dt_end_utc, is_stop_on_match=find_first,
                     )
-                if not ASCENDING:
+                if not ascending:
                     events.reverse()
             except Exception as e:
                 print_err(f'{name} {REGION_TO_ABBR.get(rgn, rgn)} {e}')
@@ -238,143 +173,147 @@ def run_sequential(log_group_names: List[str], regions: List[str]):
 
 def __parse_args(args: List[str]):
     parser = argparse.ArgumentParser(
-        description='',
-        epilog='用例：',
+        description='搜索 CloudWatch 日志：跨 region、跨 log group，按 pattern 拉取。',
+        epilog=(
+            '示例：\n'
+            '  python SearchCloudWatchLogs.py -lg PartyAnimals--209820-LoginFunction -p \'%[ERROR]%\' '
+            '-rgn NX -utc-s "2026-04-18 00:00:00+0000" -utc-e "2026-04-22 00:00:00+0000" --descending --find-first\n'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('--find-first', '-f1', action='store_true',
-                        default=False,
-                        help='对于每个日志组，一旦命中，则停止对这个日志组继续搜索',
+
+    parser.add_argument('--log-groups', '-lg',
+                        nargs='+', required=True,
+                        help='一个或多个日志组名。可省略 /aws/lambda/ 前缀。',
+                        )
+    parser.add_argument('--pattern', '-p',
+                        required=True,
+                        help='CloudWatch Filter Pattern。注意 %% 通配、引号转义需按 shell 规则处理。',
                         )
     parser.add_argument('--regions', '-rgn',
-                        help=(
-                            'fleet 地区。允许: cn-north-1, BJ, cn-northwest-1, NX, ap-northeast-1, AP, '
-                            'eu-central-1, EU, us-east-1, US'
-                        ),
-                        nargs='+',
-                        default=None,
+                        nargs='+', required=True,
+                        help='一个或多个 region。允许全名或缩写：BJ/NX/AP/JP/EU/US '
+                             '或 cn-north-1/cn-northwest-1/ap-northeast-1/eu-central-1/us-east-1。',
                         )
 
-    # 日志开始结束时间
     parser.add_argument('--utc-start', '-utc-s',
-                        help='开始时间。格式：2024-07-20 18:29:00+0800',
                         default=None, required=False,
+                        help='开始时间，格式：2026-04-18 00:00:00+0000。不传则不设下界。',
                         )
     parser.add_argument('--utc-end', '-utc-e',
-                        help='结束时间。格式：2024-07-20 18:29:00+0800',
                         default=None, required=False,
+                        help='结束时间，格式：2026-04-22 00:00:00+0000。不传则不设上界。',
                         )
 
-    # 排序拉取日志
     sort_str_allowed = ['asc', 'desc']
     g_sort = parser.add_mutually_exclusive_group()
     sort_arg_names = ['--order', '--orderby', '--sort', '--ascending', '--descending']
     sort_arg_names_help = f'{", ".join(sort_arg_names)} 只能提供一个'
-    sort_kwargs = {
-                        'dest': 'sort_order', 'default': '', 'required': False,
-                        'choices': sort_str_allowed,
-                        'help': f'[选填] 排序获取日志，默认正序获取。可用值：{", ".join(sort_str_allowed)}。{sort_arg_names_help}',
-    }
-
+    sort_kwargs = dict(
+        dest='sort_order', default='', required=False,
+        choices=sort_str_allowed,
+        help=f'[选填] 排序，默认倒序。可用值：{", ".join(sort_str_allowed)}。{sort_arg_names_help}',
+    )
     g_sort.add_argument('--ascending', '-asc', action='store_true',
                         default=None, required=False,
-                        help=f'[选填] 正序获取日志，默认正序获取。{sort_arg_names_help}',
+                        help=f'[选填] 正序。{sort_arg_names_help}',
                         )
     g_sort.add_argument('--descending', '-desc', action='store_true',
                         default=None, required=False,
-                        help=f'[选填] 倒序获取日志，默认正序获取。{sort_arg_names_help}',
+                        help=f'[选填] 倒序（默认）。{sort_arg_names_help}',
                         )
     g_sort.add_argument('--order', **sort_kwargs)
     g_sort.add_argument('--orderby', **sort_kwargs)
     g_sort.add_argument('--sort', **sort_kwargs)
 
-    # 倒序搜索分段时长
+    parser.add_argument('--find-first', '-f1', action='store_true',
+                        default=False,
+                        help='对每个 (log_group, region)，命中第一批后停止。倒序+find-first 用于查"最近一条"。',
+                        )
+
     parser.add_argument('--segment-duration', '-seg',
-                        type=int, default=None, required=False,
-                        help='[选填] 倒序搜索时每段的时长（分钟），默认 60。仅在倒序 + find-first 时生效',
+                        type=int, default=60, required=False,
+                        help='[选填] 倒序搜索时每段时长（分钟），默认 60。仅在倒序+find-first 时生效。',
+                        )
+
+    parser.add_argument('--sequential', action='store_true', default=False,
+                        help='[选填] 串行执行（默认并行多进程）。',
                         )
 
     return parser.parse_args(args)
 
 
-def __prepare_global_var(args):
-    arg_regions = args.regions if args.regions else []
-    global LOG_GROUP_NAMES, REGIONS, FIND_FIRST
+def __resolve_config(args) -> dict:
+    """把 argparse Namespace 解析成 worker 需要的实参字典。"""
+    log_group_names = [
+        name if name.startswith('/aws/lambda/') else f'/aws/lambda/{name}'
+        for name in args.log_groups
+    ]
 
-    for idx, name in enumerate(LOG_GROUP_NAMES):
-        LOG_GROUP_NAMES[idx] = name if name.startswith('/aws/lambda/') else f'/aws/lambda/{name}'
-
-    FIND_FIRST = args.find_first
-
-    # 处理地区
-    bad_regions = [r for r in arg_regions if r not in REGION_ABBR and r not in REGION_TO_ABBR]
+    bad_regions = [r for r in args.regions if r not in REGION_ABBR and r not in REGION_TO_ABBR]
     if bad_regions:
         print_err(f'地区不支持：{bad_regions}')
         sys.exit(1)
+    regions = sorted({REGION_ABBR.get(r, r) for r in args.regions})
 
-    arg_regions = [REGION_ABBR.get(r, r) for r in arg_regions if r is not None]
-    REGIONS = sorted(r for r in arg_regions if r) if arg_regions else REGIONS
-
-    # 处理时间
-    global DT_START_UTC, DT_END_UTC
     fmt = '%Y-%m-%d %H:%M:%S%z'
-    if args.utc_start:
-        DT_START_UTC = datetime.strptime(args.utc_start, fmt)
-    if args.utc_end:
-        DT_END_UTC = datetime.strptime(args.utc_end, fmt)
+    dt_start = datetime.strptime(args.utc_start, fmt) if args.utc_start else None
+    dt_end = datetime.strptime(args.utc_end, fmt) if args.utc_end else None
 
-    # 处理排序
-    global ASCENDING, SEGMENT_DURATION
-    sort_order = args.sort_order
-    if sort_order == 'desc' or args.descending:
-        ASCENDING = False
-    if args.segment_duration is not None:
-        SEGMENT_DURATION = timedelta(minutes=args.segment_duration)
+    if args.ascending:
+        ascending = True
+    elif args.descending:
+        ascending = False
+    elif args.sort_order == 'asc':
+        ascending = True
+    elif args.sort_order == 'desc':
+        ascending = False
+    else:
+        ascending = False  # 默认倒序
+
+    return dict(
+        log_group_names=log_group_names,
+        regions=regions,
+        pattern=args.pattern,
+        dt_start_utc=dt_start,
+        dt_end_utc=dt_end,
+        ascending=ascending,
+        find_first=args.find_first,
+        segment_duration=timedelta(minutes=args.segment_duration),
+        sequential=args.sequential,
+    )
 
 
-def main(is_run_parallel: bool):
-    if is_running_in_pycharm():
-        regions = ' '.join(REGIONS)
-        utc_start = DT_START_UTC.strftime('%Y-%m-%d %H:%M:%S%z')
-        # utc_start = '2026-04-18 18:29:00+0800'
-        argv = [
-            *f'--regions {regions}'.split(' '),
-            '--ascending' if ASCENDING else '--descending',
-            '--utc-start', utc_start,
-            '--segment-duration', str(int(SEGMENT_DURATION.total_seconds() // 60))
-        ]
-        if FIND_FIRST:
-            argv.append('--find-first')
+def __build_default_argv() -> List[str]:
+    """PyCharm 直接 Run 时使用的默认参数（开发模式）。"""
+    argv = [
+        '--log-groups', *DEFAULT_LOG_GROUP_NAMES,
+        '--pattern', DEFAULT_PATTERN,
+        '--regions', *DEFAULT_REGIONS,
+        '--ascending' if DEFAULT_ASCENDING else '--descending',
+        '--segment-duration', str(DEFAULT_SEGMENT_DURATION_MIN),
+    ]
+    if DEFAULT_DT_START_UTC:
+        argv += ['--utc-start', DEFAULT_DT_START_UTC.strftime('%Y-%m-%d %H:%M:%S%z')]
+    if DEFAULT_DT_END_UTC:
+        argv += ['--utc-end', DEFAULT_DT_END_UTC.strftime('%Y-%m-%d %H:%M:%S%z')]
+    if DEFAULT_FIND_FIRST:
+        argv.append('--find-first')
+    return argv
+
+
+def main():
+    if is_running_in_pycharm() and len(sys.argv) <= 1:
+        argv = __build_default_argv()
     else:
         argv = sys.argv[1:]
     args = __parse_args(argv)
     print(f'args: {args}')
-    __prepare_global_var(args)
+    cfg = __resolve_config(args)
 
-    if is_run_parallel:
-        run_parallel(LOG_GROUP_NAMES, REGIONS)
-    else:
-        run_sequential(LOG_GROUP_NAMES, REGIONS)
-
-
-def test():
-    print(sys.argv[1:])
-    args = __parse_args(sys.argv[1:])
-    print(args)
-
-    global ASCENDING
-    sort_order = args.sort_order
-    if sort_order == 'desc' or args.descending:
-        print('here')
-        ASCENDING = False
+    runner = run_sequential if cfg.pop('sequential') else run_parallel
+    runner(**cfg)
 
 
 if __name__ == '__main__':
-    # sys.argv += ['--find-first']
-    # main(is_run_parallel=True)
-    main(is_run_parallel=True)
-
-    # from cloud_watch_helper import describe_log_streams_all
-    # log_streams_all = describe_log_streams_all('cn-northwest-1', 'PartyAnimals--159490-StoreFunction')
-    # print(len(log_streams_all))
-
-    # test()
+    main()

@@ -177,7 +177,7 @@ def __parse_args(args: List[str]):
         epilog=(
             '示例：\n'
             '  python SearchCloudWatchLogs.py -lg PartyAnimals--209820-LoginFunction -p \'%[ERROR]%\' '
-            '-rgn NX -utc-s "2026-04-18 00:00:00+0000" -utc-e "2026-04-22 00:00:00+0000" --descending --find-first\n'
+            '-rgn NX -s "2026-04-18 08:00:00+0800" -e "2026-04-22 08:00:00+0800" --descending --find-first\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -196,13 +196,13 @@ def __parse_args(args: List[str]):
                              '或 cn-north-1/cn-northwest-1/ap-northeast-1/eu-central-1/us-east-1。',
                         )
 
-    parser.add_argument('--utc-start', '-utc-s',
+    parser.add_argument('--start', '-s',
                         default=None, required=False,
-                        help='开始时间，格式：2026-04-18 00:00:00+0000。不传则不设下界。',
+                        help='开始时间，必须带时区后缀，格式："2026-04-18 00:00:00+0800" 或 "+0000"。不传则不设下界。',
                         )
-    parser.add_argument('--utc-end', '-utc-e',
+    parser.add_argument('--end', '-e',
                         default=None, required=False,
-                        help='结束时间，格式：2026-04-22 00:00:00+0000。不传则不设上界。',
+                        help='结束时间，必须带时区后缀，格式："2026-04-22 00:00:00+0800" 或 "+0000"。不传则不设上界。',
                         )
 
     sort_str_allowed = ['asc', 'desc']
@@ -257,8 +257,16 @@ def __resolve_config(args) -> dict:
     regions = sorted({REGION_ABBR.get(r, r) for r in args.regions})
 
     fmt = '%Y-%m-%d %H:%M:%S%z'
-    dt_start = datetime.strptime(args.utc_start, fmt) if args.utc_start else None
-    dt_end = datetime.strptime(args.utc_end, fmt) if args.utc_end else None
+    try:
+        dt_start = datetime.strptime(args.start, fmt) if args.start else None
+        dt_end = datetime.strptime(args.end, fmt) if args.end else None
+    except ValueError as e:
+        print_err(f'时间解析失败：{e}。要求格式 "YYYY-MM-DD HH:MM:SS+ZZZZ"（必须带时区后缀，如 +0800/+0000）。')
+        sys.exit(1)
+
+    if dt_start is not None and dt_end is not None and dt_start >= dt_end:
+        print_err(f'开始时间必须早于结束时间。--start={dt_start.isoformat()} --end={dt_end.isoformat()}')
+        sys.exit(1)
 
     if args.ascending:
         ascending = True
@@ -294,9 +302,9 @@ def __build_default_argv() -> List[str]:
         '--segment-duration', str(DEFAULT_SEGMENT_DURATION_MIN),
     ]
     if DEFAULT_DT_START_UTC:
-        argv += ['--utc-start', DEFAULT_DT_START_UTC.strftime('%Y-%m-%d %H:%M:%S%z')]
+        argv += ['--start', DEFAULT_DT_START_UTC.strftime('%Y-%m-%d %H:%M:%S%z')]
     if DEFAULT_DT_END_UTC:
-        argv += ['--utc-end', DEFAULT_DT_END_UTC.strftime('%Y-%m-%d %H:%M:%S%z')]
+        argv += ['--end', DEFAULT_DT_END_UTC.strftime('%Y-%m-%d %H:%M:%S%z')]
     if DEFAULT_FIND_FIRST:
         argv.append('--find-first')
     return argv

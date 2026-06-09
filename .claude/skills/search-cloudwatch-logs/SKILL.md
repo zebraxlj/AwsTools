@@ -28,8 +28,8 @@ The script is a CLI. Run it from the project root with the project venv:
   --log-groups <name> [<name> ...] \
   --pattern '<filter-pattern>' \
   --regions <NX|JP|EU|US|...> [<region> ...] \
-  [--utc-start "YYYY-MM-DD HH:MM:SS+0000"] \
-  [--utc-end   "YYYY-MM-DD HH:MM:SS+0000"] \
+  [--start "YYYY-MM-DD HH:MM:SS+0800"] \
+  [--end   "YYYY-MM-DD HH:MM:SS+0800"] \
   [--ascending | --descending] \
   [--find-first] \
   [--segment-duration <minutes>] \
@@ -48,7 +48,7 @@ Run `--help` first if any flag is unclear.
   - `AP` / `JP` = `ap-northeast-1`
   - `EU` = `eu-central-1`
   - `US` = `us-east-1`
-- **`--utc-start` / `--utc-end`**. Format MUST include timezone offset, e.g. `"2026-04-18 00:00:00+0000"`. If the user gives a local-time range, convert to UTC first and confirm with them. Both are optional but strongly recommended — without them the search hits the entire log group and is very slow.
+- **`--start` / `-s`** and **`--end` / `-e`**. Format MUST include a timezone offset, e.g. `"2026-04-18 08:00:00+0800"` or `"2026-04-18 00:00:00+0000"`. Both are accepted — internally compared as tz-aware datetimes. A naive datetime (no offset) is rejected. Both are optional but strongly recommended — without them the search hits the entire log group and is very slow. The script also rejects `start >= end`.
 - **Sort**: default is `--descending` (newest first). Pass `--ascending` only when the user explicitly wants chronological order from a known start time.
 - **`--find-first` / `-f1`**. When set, each `(log_group, region)` worker stops after the first matching batch. Combine with descending (the default) to find "the most recent occurrence" — this is the common case for "is there any X in the last few days?". Without `--find-first`, the script pulls ALL matching events in the time window, which can be expensive.
 - **`--segment-duration` / `-seg`**. In minutes. Only takes effect with descending + find-first: the time range is sliced into segments from latest to earliest, each fetched separately. Default 60. Use a longer segment (e.g. 1440 = 24h) when matches are rare; shorter when matches are dense.
@@ -67,7 +67,7 @@ Run `--help` first if any flag is unclear.
 ## Common pitfalls
 
 - **Filter pattern is NOT regex.** `[ERROR]` in CloudWatch literally means "tokens ERROR appear in this group of words"; you usually want `'%[ERROR]%'` for substring match. If the user gives a regex, translate it to filter-pattern semantics or warn them.
-- **Time without timezone is rejected.** The script parses with `%Y-%m-%d %H:%M:%S%z`; `"2026-04-18 00:00:00"` (no tz) will throw. Always include `+0000` or the appropriate offset.
+- **Time without timezone is rejected.** The script parses with `%Y-%m-%d %H:%M:%S%z`; `"2026-04-18 00:00:00"` (no tz) will throw. Always include the offset (`+0800` for the Feishu-alert local tz, `+0000` for UTC).
 - **Log group naming.** `LoginFunction` alone is ambiguous — the same Lambda exists in many envs. Always include the env+build prefix.
 - **Cross-region permissions.** Some envs/regions need a specific AWS profile. The script uses `utils.aws_client_helper.get_aws_profile` based on the env parsed from the log group name. If you see `ExpiredToken` or `AccessDenied`, tell the user to refresh credentials (likely via the MFA tool in this repo) before retrying.
 

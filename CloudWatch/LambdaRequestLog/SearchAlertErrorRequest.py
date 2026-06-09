@@ -1,4 +1,6 @@
+import argparse
 import csv
+import json
 import os
 import platform
 import re
@@ -18,60 +20,39 @@ from CloudWatch.cloud_watch_helper import get_log_client, filter_log_events  # n
 from utils.aws_consts import AllEnvs, Env  # noqa: E402
 from utils.aws_consts_profile import get_profiles_for_curr_pc, PROFILE_Samson  # noqa: E402
 from utils.aws_urls import gen_cloud_watch_log_stream_url  # noqa: E402
+from utils.exec_env_util import is_running_in_pycharm  # noqa: E402
 
 """
 使用方法：
-1. 脚本内搜索 PROFILE_CN、PROFILE_US，根据你的计算机名与 aws config 中 profile 的命名
-2. 脚本内搜索 ALERT_DETAIL，从飞书中复制 PA生产网关告警 内容并填入
-3. 用 PyTest 运行 test_prod_alarm，或在终端中直接运行脚本
-4. 注意 Console 中注明的输出文件位置
+- 命令行（推荐）：
+    python SearchAlertErrorRequest.py --alert-file alert.txt
+    cat alert.txt | python SearchAlertErrorRequest.py --alert-stdin
+    完整参数见 --help。
+
+- PyCharm 直接 Run（开发便利路径）：
+    1. 把飞书告警内容粘贴到本脚本同目录下的 input.txt 并保存
+    2. 直接 Run 本脚本（Run Configuration 不需要配参数）
+    脚本检测到 PyCharm 环境且无参数时，会自动以 --alert-file <script_dir>/input.txt 运行。
+    若想覆盖默认行为，在 Run Configuration 里手动配置参数即可。
+
+- GUI：运行 SearchAlertErrorRequestUI
+
+- 时间窗口：默认告警时间往前 5 分钟、往后 0 分钟。
+    --window-before / --window-after 调整窗口大小（分钟）
+    --start / --end 完全自定义窗口（必须带时区后缀，如 +0800/+0000；与 --window-* 互斥）
+
+- 输出：在 --output-dir 指定的目录（默认脚本目录）下生成两份 CSV：
+    *_ERROR.csv  告警时间窗口内所有 [ERROR] 行
+    *_FULL.csv   涉及上述错误的请求 id 的全部日志（不只是 ERROR 行）
+    --print-result-json 时，stdout 末尾追加一行 JSON 包含路径与命中数。
 """
 
-ALERT_DETAIL = '''
-Lambda Log 告警
-区域: cn-northwest-1
-函数:
-告警内容:
-告警时间:
-错误数量：
-首行错误：
-查看详情
-'''
-
 pc_name = platform.node()
-PROFILE_CN, PROFILE_US = '', ''
 
-# 设置数据文件夹
-DATA_DIR = __SCRIPT_DIR
+# 默认输出目录
+DEFAULT_DATA_DIR = os.path.join(__SCRIPT_DIR, 'Data', 'LambdaRequestLog')
 if pc_name in {'Source-XiaLijie'}:
-    DATA_DIR = os.path.join(__PROJ_DIR, 'CloudWatch', 'Data', 'LambdaRequestLog')
-
-
-def main():
-    print()
-    global ALERT_DETAIL
-    if not ALERT_DETAIL.strip() or get_profiles_for_curr_pc() == PROFILE_Samson:
-        try:
-            input_file_path = os.path.join(DATA_DIR, 'input.txt')
-            with open(input_file_path, 'r', encoding='utf8') as f_in:
-                input_data = f_in.read()
-                if input_data:
-                    ALERT_DETAIL = input_data
-                print(f'告警信息来源：{input_file_path}')
-        except FileNotFoundError:
-            print('告警信息来源：当前脚本')
-        except Exception as e:
-            print(e)
-            import traceback
-            traceback_log = traceback.format_tb(e.__traceback__)
-            traceback_list = list(reversed(traceback_log))
-            print(''.join(traceback_list))
-
-    alert_detail_lines = ALERT_DETAIL.strip().split('\n')
-    print('告警信息: -----------------------------------------------------')
-    print('\n'.join(alert_detail_lines[:min(8, len(alert_detail_lines))]), '\n', sep='')
-    alert_detail: AlertDetail = parse_alert_detail(ALERT_DETAIL)
-    handle_alert(alert_detail)
+    DEFAULT_DATA_DIR = os.path.join(__PROJ_DIR, 'CloudWatch', 'Data', 'LambdaRequestLog')
 
 
 # region HelperFunctions
@@ -196,7 +177,9 @@ class HandleAlertResult:
 
 
 def handle_alert(
-        alert_detail: AlertDetail, dt_start: Optional[datetime] = None, dt_end: Optional[datetime] = None
+        alert_detail: AlertDetail,
+        dt_start: Optional[datetime] = None, dt_end: Optional[datetime] = None,
+        output_dir: Optional[str] = None,
 ) -> HandleAlertResult:
     alert_dt = alert_detail.alarm_dt
     alert_rgn = alert_detail.rgn
@@ -205,6 +188,13 @@ def handle_alert(
 
     local_dt_end = dt_end if dt_end is not None else alert_dt
     local_dt_start = dt_start if dt_start is not None else local_dt_end - timedelta(minutes=5)
+    out_dir = output_dir if output_dir is not None else DEFAULT_DATA_DIR
+
+    if local_dt_start >= local_dt_end:
+        raise ValueError(
+            f'开始时间必须早于结束时间。dt_start={local_dt_start.isoformat()} '
+            f'dt_end={local_dt_end.isoformat()}'
+        )
 
     print('搜索: ---------------------------------------------------------')
     print(
@@ -212,6 +202,7 @@ def handle_alert(
         f'地区: {alert_rgn}\n'
         f'开始时间：{local_dt_start}\n'
         f'结束时间：{local_dt_end}\n'
+        f'输出目录：{out_dir}\n'
     )
 
     env_name = fn_name.split('--')[0]
@@ -233,14 +224,10 @@ def handle_alert(
 
     # 输出 Error 日志条目
     error_file = os.path.join(
-        DATA_DIR,
+        out_dir,
         f'{fn_name}_{alert_rgn}_{str_start}_{str_end}_ERROR.csv'
     )
     save_log_details_to_csv(error_file, log_details_err)
-
-    # print(f'Error 日志条目: ----------------------------------------------')
-    # for d in log_details:
-    #     print(f"{d.date_time}\t{d.message}\n{d.url}\n")
 
     # 准备输出 Error 事件完整日志
     id_set = set([d.id for d in log_details_err])
@@ -282,7 +269,7 @@ def handle_alert(
     log_details.sort(key=lambda x: (id_index[x.id], x.date_time))
 
     # 输出 Error 事件完整日志
-    full_file = os.path.join(DATA_DIR, f'{fn_name}_{alert_rgn}_{str_start}_{str_end}_FULL.csv')
+    full_file = os.path.join(out_dir, f'{fn_name}_{alert_rgn}_{str_start}_{str_end}_FULL.csv')
     save_log_details_to_csv(full_file, log_details)
     result: HandleAlertResult = HandleAlertResult(
         error_cnt=len(log_details_err),
@@ -290,10 +277,6 @@ def handle_alert(
         full_cnt=len(log_details),
         full_csv=full_file,
     )
-
-    # print(f'Error 请求完整日志: -------------------------------------------')
-    # for d in log_details:
-    #     print(f"{d.date_time}\t{d.message}\n{d.url}\n")
 
     if False and get_profiles_for_curr_pc() == PROFILE_Samson:
         from CloudWatch.LambdaRequestLog.AnalyzeAlertLog import check_config_center_steam_stability, \
@@ -379,6 +362,135 @@ def read_log_details_from_csv(file_name: str, top_n_lines: Optional[int] = None)
         return ret
 
 # endregion 日志解析与保存
+
+
+def __parse_args(argv: List[str]):
+    parser = argparse.ArgumentParser(
+        description='解析飞书 Lambda 错误告警，拉取告警时间附近的 ERROR 日志和涉及请求的完整日志。',
+        epilog=(
+            '示例：\n'
+            '  python SearchAlertErrorRequest.py --alert-file alert.txt\n'
+            '  cat alert.txt | python SearchAlertErrorRequest.py --alert-stdin\n'
+            '  python SearchAlertErrorRequest.py --alert-file alert.txt --window-before 30 --print-result-json\n'
+            '  python SearchAlertErrorRequest.py --alert-file alert.txt '
+            '--start "2026-04-18 12:00:00+0800" --end "2026-04-18 12:30:00+0800"\n'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    g_input = parser.add_mutually_exclusive_group(required=True)
+    g_input.add_argument('--alert-file', '-f',
+                         help='告警文本文件路径（飞书告警内容粘贴后保存的 .txt）。')
+    g_input.add_argument('--alert-stdin', action='store_true',
+                         help='从 stdin 读取告警文本。')
+
+    parser.add_argument('--output-dir', '-o',
+                        default=None,
+                        help=f'输出目录。默认: {DEFAULT_DATA_DIR}')
+
+    # 注意 default=None：argparse mutex 通过 "action 是否被触发" 判断冲突，
+    # 默认值若非 None 则即便用户没传也会让 mutex 失效——所以默认值放到 __resolve_window 里。
+    g_start = parser.add_mutually_exclusive_group()
+    g_start.add_argument('--window-before',
+                         type=int, default=None,
+                         help='告警时间往前推多少分钟，默认 5。与 --start 互斥。')
+    g_start.add_argument('--start', '-s',
+                         default=None,
+                         help='开始时间，必须带时区后缀，格式 "YYYY-MM-DD HH:MM:SS+0800" 或 "+0000"。'
+                              '与 --window-before 互斥。')
+
+    g_end = parser.add_mutually_exclusive_group()
+    g_end.add_argument('--window-after',
+                       type=int, default=None,
+                       help='告警时间往后推多少分钟，默认 0。与 --end 互斥。')
+    g_end.add_argument('--end', '-e',
+                       default=None,
+                       help='结束时间，必须带时区后缀，格式 "YYYY-MM-DD HH:MM:SS+0800" 或 "+0000"。'
+                            '与 --window-after 互斥。')
+
+    parser.add_argument('--print-result-json', action='store_true',
+                        help='完成后在 stdout 末尾打印一行 JSON，包含 csv 路径和命中数（便于脚本/skill 解析）。')
+
+    return parser.parse_args(argv)
+
+
+def __parse_aware_dt(value: str, label: str) -> datetime:
+    """解析带时区的时间字符串。strptime '%z' 强制时区后缀，缺时区会抛 ValueError。"""
+    fmt = '%Y-%m-%d %H:%M:%S%z'
+    try:
+        return datetime.strptime(value, fmt)
+    except ValueError as e:
+        raise ValueError(
+            f'{label} 解析失败：{value!r}。要求格式 "YYYY-MM-DD HH:MM:SS+ZZZZ"（必须带时区后缀，如 +0800/+0000）。'
+            f'底层错误：{e}'
+        )
+
+
+def __resolve_window(args, alert_dt: datetime) -> tuple:
+    """根据 args 解析最终的 dt_start / dt_end，并校验先后顺序。
+    --window-before / --window-after 默认 None（用 mutex 检测用），未传时用 5 / 0 回填。"""
+    if args.start:
+        dt_start = __parse_aware_dt(args.start, '--start')
+    else:
+        wb = args.window_before if args.window_before is not None else 5
+        dt_start = alert_dt - timedelta(minutes=wb)
+    if args.end:
+        dt_end = __parse_aware_dt(args.end, '--end')
+    else:
+        wa = args.window_after if args.window_after is not None else 0
+        dt_end = alert_dt + timedelta(minutes=wa)
+
+    if dt_start >= dt_end:
+        raise ValueError(
+            f'开始时间必须早于结束时间。当前 dt_start={dt_start.isoformat()} '
+            f'dt_end={dt_end.isoformat()}。检查 --window-before/--window-after 或 --start/--end。'
+        )
+    return dt_start, dt_end
+
+
+def __read_alert_text(args) -> str:
+    if args.alert_stdin:
+        text = sys.stdin.read()
+        print('告警信息来源：stdin')
+    else:
+        with open(args.alert_file, 'r', encoding='utf8') as f:
+            text = f.read()
+        print(f'告警信息来源：{args.alert_file}')
+    if not text.strip():
+        raise ValueError('告警文本为空')
+    return text
+
+
+def main():
+    argv = sys.argv[1:]
+    if is_running_in_pycharm() and not argv:
+        # PyCharm 直接 Run（未配 Run Configuration 参数）：默认读取脚本目录下的 input.txt
+        default_input = os.path.join(__SCRIPT_DIR, 'input.txt')
+        argv = ['--alert-file', default_input]
+    args = __parse_args(argv)
+
+    alert_text = __read_alert_text(args)
+    alert_lines = alert_text.strip().split('\n')
+    print('告警信息: -----------------------------------------------------')
+    print('\n'.join(alert_lines[:min(8, len(alert_lines))]), '\n', sep='')
+
+    alert_detail: AlertDetail = parse_alert_detail(alert_text)
+    dt_start, dt_end = __resolve_window(args, alert_detail.alarm_dt)
+
+    result = handle_alert(
+        alert_detail,
+        dt_start=dt_start,
+        dt_end=dt_end,
+        output_dir=args.output_dir,
+    )
+
+    if args.print_result_json:
+        print(json.dumps({
+            'error_csv': result.error_csv,
+            'error_cnt': result.error_cnt,
+            'full_csv': result.full_csv,
+            'full_cnt': result.full_cnt,
+        }, ensure_ascii=False))
 
 
 if __name__ == '__main__':

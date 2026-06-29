@@ -1,10 +1,17 @@
 import argparse
 import multiprocessing
 import os
+import platform
+import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
+
+# 脚本所在目录（在 os.chdir 之前固定下来，后续 chdir 不影响），默认输出目录基于此。
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_BASE_DIR = os.path.join(SCRIPT_DIR, 'Data', 'SearchCloudWatchLogs')
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 os.chdir('..')
@@ -139,36 +146,107 @@ def run_parallel(
         print("All Processes completed.")
 
 
+def __default_output_path() -> str:
+    """默认输出文件路径：CloudWatch/Data/SearchCloudWatchLogs/SearchCloudWatchLogs_<时间戳>.tsv。"""
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return os.path.join(OUTPUT_BASE_DIR, f'SearchCloudWatchLogs_{ts}.tsv')
+
+
+def __format_event_tsv(e: FilterLogEventsResp, log_group_name: str, region: str) -> str:
+    """把单条命中事件格式化为 TSV 行：时间\t消息\tURL（与并行模式打印一致）。"""
+    fmt_event = '%Y-%m-%d %H:%M:%S.%f'
+    event_ts = datetime.fromtimestamp(e.timestamp / 1000, tz=timezone.utc)
+    event_url = aws_urls.gen_cloud_watch_log_stream_url1(
+        log_group=log_group_name, log_rgn=region, log_stream=e.logStreamName,
+        timestamp=e.timestamp, event_id=e.eventId,
+    )
+    return f'{datetime.strftime(event_ts, fmt_event)[:-3]}\t{e.message.rstrip()}\t{event_url}'
+
+
+def __is_wsl() -> bool:
+    """是否运行在 WSL（sys.platform 为 linux，但内核 release 含 microsoft/WSL）。"""
+    if sys.platform != 'linux':
+        return False
+    try:
+        return 'microsoft' in platform.uname().release.lower()
+    except Exception:
+        return False
+
+
+def __reveal_in_explorer(path: str):
+    """在系统文件管理器中打开并选中文件。找不到可用命令时静默跳过（路径已打印），仅真异常告警。"""
+    path = os.path.normpath(os.path.abspath(path))
+    try:
+        if sys.platform == 'win32':
+            # explorer 即使成功也常返回非 0，故不检查返回码；/select, 后必须紧跟路径。
+            subprocess.run(['explorer', f'/select,{path}'])
+        elif sys.platform == 'darwin':
+            if shutil.which('open'):
+                subprocess.run(['open', '-R', path], check=False)
+        elif __is_wsl():
+            # WSL：用 Windows 的 explorer.exe，路径需先经 wslpath -w 转成 Windows 形式。
+            if shutil.which('explorer.exe'):
+                win_path = path
+                if shutil.which('wslpath'):
+                    win_path = subprocess.run(
+                        ['wslpath', '-w', path], check=True, capture_output=True, text=True,
+                    ).stdout.strip()
+                subprocess.run(['explorer.exe', f'/select,{win_path}'])
+        else:
+            # 其它 Linux：有 xdg-open 才开父目录，没有就静默跳过。
+            if shutil.which('xdg-open'):
+                subprocess.run(['xdg-open', os.path.dirname(path)], check=False)
+    except Exception as e:
+        print_err(f'打开文件夹失败（不影响结果文件）：{e}')
+
+
 def run_sequential(
     log_group_names: List[str], regions: List[str], pattern: str,
     dt_start_utc: Optional[datetime], dt_end_utc: Optional[datetime],
     ascending: bool, find_first: bool, segment_duration: timedelta,
+    output: Optional[str] = None, open_after: bool = False,
 ):
     fmt = "%Y-%m-%d %H:%M:%S"
-    for name in log_group_names:
-        for rgn in regions:
-            dt_start = datetime.now()
-            print(f'开始：{name} {REGION_TO_ABBR.get(rgn, rgn)} {dt_start.strftime(fmt)}')
-            try:
-                if not ascending and find_first:
-                    events, _ = filter_log_events_descending(
-                        rgn, name, pattern, dt_start=dt_start_utc, dt_end=dt_end_utc, is_stop_on_match=True,
-                        segment_duration=segment_duration,
-                    )
-                else:
-                    events, _ = filter_log_events(
-                        rgn, name, pattern, dt_start=dt_start_utc, dt_end=dt_end_utc, is_stop_on_match=find_first,
-                    )
-                if not ascending:
-                    events.reverse()
-            except Exception as e:
-                print_err(f'{name} {REGION_TO_ABBR.get(rgn, rgn)} {e}')
-                events = []
-            if events:
-                print(events)
-            dt_end = datetime.now()
-            duration = (dt_end - dt_start).total_seconds()
-            print(f'完成：{name} {REGION_TO_ABBR.get(rgn, rgn)} {dt_end} 耗时：{duration}s 命中：{len(events)}')
+    if output:
+        os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
+    out_fh = open(output, 'w', encoding='utf-8', newline='') if output else None
+    total_hits = 0
+    try:
+        for name in log_group_names:
+            for rgn in regions:
+                dt_start = datetime.now()
+                print(f'开始：{name} {REGION_TO_ABBR.get(rgn, rgn)} {dt_start.strftime(fmt)}')
+                try:
+                    if not ascending and find_first:
+                        events, _ = filter_log_events_descending(
+                            rgn, name, pattern, dt_start=dt_start_utc, dt_end=dt_end_utc, is_stop_on_match=True,
+                            segment_duration=segment_duration,
+                        )
+                    else:
+                        events, _ = filter_log_events(
+                            rgn, name, pattern, dt_start=dt_start_utc, dt_end=dt_end_utc, is_stop_on_match=find_first,
+                        )
+                    if not ascending:
+                        events.reverse()
+                except Exception as e:
+                    print_err(f'{name} {REGION_TO_ABBR.get(rgn, rgn)} {e}')
+                    events = []
+                for e in (FilterLogEventsResp(**ev) for ev in events):
+                    line = __format_event_tsv(e, name, rgn)
+                    print(line)
+                    if out_fh:
+                        out_fh.write(line + '\n')
+                total_hits += len(events)
+                dt_end = datetime.now()
+                duration = (dt_end - dt_start).total_seconds()
+                print(f'完成：{name} {REGION_TO_ABBR.get(rgn, rgn)} {dt_end} 耗时：{duration}s 命中：{len(events)}')
+    finally:
+        if out_fh:
+            out_fh.close()
+            abs_path = os.path.abspath(output)
+            print(f'结果已写入：{abs_path}（共 {total_hits} 条）')
+            if open_after:
+                __reveal_in_explorer(abs_path)
 
 
 def __parse_args(args: List[str]):
@@ -240,6 +318,18 @@ def __parse_args(args: List[str]):
                         help='[选填] 串行执行（默认并行多进程）。',
                         )
 
+    parser.add_argument('--no-file', action='store_true', default=False,
+                        help='[选填] 不写结果文件（串行模式默认会写文件，用此开关关闭）。',
+                        )
+    parser.add_argument('--no-open', action='store_true', default=False,
+                        help='[选填] 写完文件后不自动打开文件管理器选中文件（默认会打开）。',
+                        )
+    parser.add_argument('--output', '-o',
+                        default=None, required=False,
+                        help='[选填] 指定结果文件路径（TSV：时间\\t消息\\tURL）。'
+                             f'不传则默认写到 {OUTPUT_BASE_DIR} 下自动命名的文件。仅在串行模式（--sequential）下生效。',
+                        )
+
     return parser.parse_args(args)
 
 
@@ -268,6 +358,17 @@ def __resolve_config(args) -> dict:
         print_err(f'开始时间必须早于结束时间。--start={dt_start.isoformat()} --end={dt_end.isoformat()}')
         sys.exit(1)
 
+    if args.output and not args.sequential:
+        print_err('--output 仅在串行模式下生效，请同时加上 --sequential。')
+        sys.exit(1)
+
+    # 解析输出文件：仅串行模式出文件，默认写到 OUTPUT_BASE_DIR 自动命名，--no-file 关闭，-o 覆盖路径。
+    if args.sequential and not args.no_file:
+        output = args.output or __default_output_path()
+    else:
+        output = None
+    open_after = bool(output) and not args.no_open
+
     if args.ascending:
         ascending = True
     elif args.descending:
@@ -289,6 +390,8 @@ def __resolve_config(args) -> dict:
         find_first=args.find_first,
         segment_duration=timedelta(minutes=args.segment_duration),
         sequential=args.sequential,
+        output=output,
+        open_after=open_after,
     )
 
 
@@ -319,8 +422,13 @@ def main():
     print(f'args: {args}')
     cfg = __resolve_config(args)
 
-    runner = run_sequential if cfg.pop('sequential') else run_parallel
-    runner(**cfg)
+    sequential = cfg.pop('sequential')
+    output = cfg.pop('output')
+    open_after = cfg.pop('open_after')
+    if sequential:
+        run_sequential(**cfg, output=output, open_after=open_after)
+    else:
+        run_parallel(**cfg)
 
 
 if __name__ == '__main__':

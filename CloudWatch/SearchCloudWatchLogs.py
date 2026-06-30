@@ -2,12 +2,12 @@ import argparse
 import multiprocessing
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
-import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 # 脚本所在目录（在 os.chdir 之前固定下来，后续 chdir 不影响），默认输出目录基于此。
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,73 +47,82 @@ DEFAULT_PATTERN = r'IdName code resp'
 # endregion 默认值
 
 
-def process_print(
-    shared_msg_dict: Dict[str, str], shared_dict: Dict[str, list], stop_event
-):
-    while not stop_event.is_set():
-        time.sleep(10)
-
-
 def process_worker(
     log_group_name: str, region: str, pattern: str,
     dt_start_utc: Optional[datetime], dt_end_utc: Optional[datetime],
     ascending: bool, find_first: bool, segment_duration: timedelta,
-    shared_msg_dict: dict, shared_dict: Dict[str, list], stop_event,
+    shared_results: dict, stop_event, print_lock, output_dir: Optional[str],
 ):
-    fmt = '%Y-%m-%d %H:%M:%S.%f'
-
-    def __gen_msg(msg: str):
-        return f'{datetime.now().strftime(fmt)} > {msg}'
-
+    shared_key = f'{log_group_name} {REGION_TO_ABBR.get(region, region)}'
+    with print_lock:
+        print(f'开始：{shared_key}')
     worker_dt_start = datetime.now()
 
-    shared_key = f'{log_group_name} {REGION_TO_ABBR.get(region, region)}'
-    shared_msg_dict[shared_key] = [__gen_msg(f'{shared_key}: 开始')]
-    print(shared_msg_dict[shared_key])
-    shared_dict[shared_key] = []
+    error: Optional[str] = None
+    events: list
+    try:
+        if not ascending and find_first:
+            events, _ = filter_log_events_descending(
+                region, log_group_name, pattern,
+                dt_start=dt_start_utc, dt_end=dt_end_utc,
+                is_stop_on_match=True,
+                stop_event=stop_event,
+                segment_duration=segment_duration,
+            )
+        else:
+            events, _ = filter_log_events(
+                region, log_group_name, pattern,
+                dt_start=dt_start_utc, dt_end=dt_end_utc,
+                is_stop_on_match=find_first,
+                stop_event=stop_event,
+            )
+        if not ascending:
+            events.reverse()
+    except Exception as e:
+        events, error = [], str(e)
 
-    if not ascending and find_first:
-        events, _stats = filter_log_events_descending(
-            region, log_group_name, pattern,
-            dt_start=dt_start_utc, dt_end=dt_end_utc,
-            is_stop_on_match=True,
-            stop_event=stop_event,
-            segment_duration=segment_duration,
-        )
-    else:
-        events, _stats = filter_log_events(
-            region, log_group_name, pattern,
-            dt_start=dt_start_utc, dt_end=dt_end_utc,
-            is_stop_on_match=find_first,
-            stop_event=stop_event,
-        )
+    lines = [__format_event_tsv(FilterLogEventsResp(**ev), log_group_name, region) for ev in events]
 
-    if not ascending:
-        events.reverse()
-    log_event_objs = [FilterLogEventsResp(**e) for e in events]
-    for e in log_event_objs:
-        event_ts = datetime.fromtimestamp(e.timestamp / 1000, tz=timezone.utc)
-        event_url = aws_urls.gen_cloud_watch_log_stream_url1(
-            log_group=log_group_name, log_rgn=region, log_stream=e.logStreamName,
-            timestamp=e.timestamp, event_id=e.eventId,
-        )
-        print(f'{datetime.strftime(event_ts, fmt)[:-3]}', f'{e.message.rstrip()}', f'{event_url}', sep='\t')
-    shared_dict[shared_key] = events
+    # 各 worker 写各自的文件（互不相同的文件，无需加锁）。
+    out_file: Optional[str] = None
+    if output_dir and not error:
+        out_file = os.path.join(output_dir, __safe_filename(log_group_name, region))
+        with open(out_file, 'w', encoding='utf-8', newline='') as fh:
+            for line in lines:
+                fh.write(line + '\n')
 
     worker_duration = (datetime.now() - worker_dt_start).total_seconds()
-    shared_msg_dict[shared_key] = [__gen_msg(f'{shared_key}: 完成。耗时：{worker_duration:.3f}s 任务总结：{_stats}')]
-    print(shared_msg_dict[shared_key])
+    # 只回传计数/状态给主进程做汇总与崩溃检测（不再回传整批 events，省内存/省 IPC）。
+    shared_results[shared_key] = {
+        'hits': len(events), 'error': error,
+        'duration': worker_duration, 'file': out_file,
+    }
+
+    # 整块加锁打印：保证单个 worker 的输出连续打完，不与其它 worker 交错。
+    with print_lock:
+        if error:
+            print_err(f'== {shared_key} == 失败：{error}')
+        else:
+            suffix = f'  → {out_file}' if out_file else ''
+            print(f'== {shared_key} == 命中 {len(events)} 耗时 {worker_duration:.3f}s{suffix}')
+            for line in lines:
+                print(line)
+        sys.stdout.flush()
 
 
 def run_parallel(
     log_group_names: List[str], regions: List[str], pattern: str,
     dt_start_utc: Optional[datetime], dt_end_utc: Optional[datetime],
     ascending: bool, find_first: bool, segment_duration: timedelta,
+    output_dir: Optional[str] = None, open_after: bool = False,
 ):
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
     stop_event = multiprocessing.Event()
     with multiprocessing.Manager() as manager:
-        shared_msg_dict = manager.dict()
-        shared_dict = manager.dict()
+        shared_results = manager.dict()
+        print_lock = manager.Lock()  # 跨进程串行化 stdout，保证整块输出不交错
 
         processes: List[multiprocessing.Process] = []
         for group_name in log_group_names:
@@ -122,16 +131,11 @@ def run_parallel(
                     target=process_worker, args=(
                         group_name, rgn, pattern,
                         dt_start_utc, dt_end_utc, ascending, find_first, segment_duration,
-                        shared_msg_dict, shared_dict, stop_event,
+                        shared_results, stop_event, print_lock, output_dir,
                     )
                 )
                 processes.append(process)
                 process.start()
-
-        process_print_output = multiprocessing.Process(
-            target=process_print, args=(shared_msg_dict, shared_dict, stop_event)
-        )
-        process_print_output.start()
 
         try:
             for p in processes:
@@ -140,14 +144,35 @@ def run_parallel(
             print('Keyboard Interrupted')
         finally:
             stop_event.set()
-            process_print_output.join()
             for process in processes:
                 process.join()
-        print("All Processes completed.")
+
+        # 明细已由各 worker 实时（加锁）打印并各自落盘，这里只做崩溃检测 + 总命中汇总。
+        total_hits = 0
+        for group_name in log_group_names:
+            for rgn in regions:
+                shared_key = f'{group_name} {REGION_TO_ABBR.get(rgn, rgn)}'
+                res = shared_results.get(shared_key)
+                if res is None:
+                    print_err(f'== {shared_key} == 无结果（worker 异常退出）')
+                    continue
+                if not res['error']:
+                    total_hits += res['hits']
+        print(f'All Processes completed. 总命中：{total_hits}')
+        if output_dir:
+            print(f'结果已写入目录：{os.path.abspath(output_dir)}')
+            if open_after:
+                __reveal_in_explorer(output_dir, select=False)
 
 
-def __default_output_path() -> str:
-    """默认输出文件路径：CloudWatch/Data/SearchCloudWatchLogs/SearchCloudWatchLogs_<时间戳>.tsv。"""
+def __default_output_dir_parallel() -> str:
+    """并行默认输出目录：CloudWatch/Data/SearchCloudWatchLogs/Run_<时间戳>/（每个 worker 一个文件）。"""
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return os.path.join(OUTPUT_BASE_DIR, f'Run_{ts}')
+
+
+def __default_output_path_sequential() -> str:
+    """串行默认输出文件路径：CloudWatch/Data/SearchCloudWatchLogs/SearchCloudWatchLogs_<时间戳>.tsv。"""
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     return os.path.join(OUTPUT_BASE_DIR, f'SearchCloudWatchLogs_{ts}.tsv')
 
@@ -173,16 +198,17 @@ def __is_wsl() -> bool:
         return False
 
 
-def __reveal_in_explorer(path: str):
-    """在系统文件管理器中打开并选中文件。找不到可用命令时静默跳过（路径已打印），仅真异常告警。"""
+def __reveal_in_explorer(path: str, select: bool = True):
+    """在系统文件管理器中打开 path。select=True 选中该文件；select=False 直接打开该目录。
+    找不到可用命令时静默跳过（路径已打印），仅真异常告警。"""
     path = os.path.normpath(os.path.abspath(path))
     try:
         if sys.platform == 'win32':
             # explorer 即使成功也常返回非 0，故不检查返回码；/select, 后必须紧跟路径。
-            subprocess.run(['explorer', f'/select,{path}'])
+            subprocess.run(['explorer', f'/select,{path}'] if select else ['explorer', path])
         elif sys.platform == 'darwin':
             if shutil.which('open'):
-                subprocess.run(['open', '-R', path], check=False)
+                subprocess.run(['open', '-R', path] if select else ['open', path], check=False)
         elif __is_wsl():
             # WSL：用 Windows 的 explorer.exe，路径需先经 wslpath -w 转成 Windows 形式。
             if shutil.which('explorer.exe'):
@@ -191,13 +217,21 @@ def __reveal_in_explorer(path: str):
                     win_path = subprocess.run(
                         ['wslpath', '-w', path], check=True, capture_output=True, text=True,
                     ).stdout.strip()
-                subprocess.run(['explorer.exe', f'/select,{win_path}'])
+                subprocess.run(['explorer.exe', f'/select,{win_path}'] if select else ['explorer.exe', win_path])
         else:
-            # 其它 Linux：有 xdg-open 才开父目录，没有就静默跳过。
+            # 其它 Linux：有 xdg-open 才打开目录，没有就静默跳过。
+            target = os.path.dirname(path) if select else path
             if shutil.which('xdg-open'):
-                subprocess.run(['xdg-open', os.path.dirname(path)], check=False)
+                subprocess.run(['xdg-open', target], check=False)
     except Exception as e:
         print_err(f'打开文件夹失败（不影响结果文件）：{e}')
+
+
+def __safe_filename(log_group_name: str, region: str) -> str:
+    """由 (日志组, region) 生成安全文件名：<组简称>__<region缩写>.tsv。"""
+    short = log_group_name.replace('/aws/lambda/', '')
+    short = re.sub(r'[<>:"/\\|?*]', '_', short).strip() or 'unnamed'
+    return f'{short}__{REGION_TO_ABBR.get(region, region)}.tsv'
 
 
 def run_sequential(
@@ -319,15 +353,16 @@ def __parse_args(args: List[str]):
                         )
 
     parser.add_argument('--no-file', action='store_true', default=False,
-                        help='[选填] 不写结果文件（串行模式默认会写文件，用此开关关闭）。',
+                        help='[选填] 不写结果文件（两种模式默认都会写文件，用此开关关闭）。',
                         )
     parser.add_argument('--no-open', action='store_true', default=False,
-                        help='[选填] 写完文件后不自动打开文件管理器选中文件（默认会打开）。',
+                        help='[选填] 写完后不自动打开文件管理器（默认会打开：串行选中文件，并行打开目录）。',
                         )
     parser.add_argument('--output', '-o',
                         default=None, required=False,
-                        help='[选填] 指定结果文件路径（TSV：时间\\t消息\\tURL）。'
-                             f'不传则默认写到 {OUTPUT_BASE_DIR} 下自动命名的文件。仅在串行模式（--sequential）下生效。',
+                        help='[选填] 覆盖默认输出位置（TSV：时间\\t消息\\tURL）。'
+                             '串行模式下是单个文件路径；并行模式下是目录（每个 worker 一个文件）。'
+                             f'不传则默认写到 {OUTPUT_BASE_DIR} 下（并行为 Run_<时间戳>/ 子目录）。',
                         )
 
     return parser.parse_args(args)
@@ -358,15 +393,14 @@ def __resolve_config(args) -> dict:
         print_err(f'开始时间必须早于结束时间。--start={dt_start.isoformat()} --end={dt_end.isoformat()}')
         sys.exit(1)
 
-    if args.output and not args.sequential:
-        print_err('--output 仅在串行模式下生效，请同时加上 --sequential。')
-        sys.exit(1)
-
-    # 解析输出文件：仅串行模式出文件，默认写到 OUTPUT_BASE_DIR 自动命名，--no-file 关闭，-o 覆盖路径。
-    if args.sequential and not args.no_file:
-        output = args.output or __default_output_path()
-    else:
+    # 解析输出（两种模式默认都出文件，--no-file 关闭，-o 覆盖默认）：
+    #   串行：output 是单个文件路径；并行：output 是目录（每个 worker 一个文件）。
+    if args.no_file:
         output = None
+    elif args.sequential:
+        output = args.output or __default_output_path_sequential()
+    else:
+        output = args.output or __default_output_dir_parallel()
     open_after = bool(output) and not args.no_open
 
     if args.ascending:
@@ -428,7 +462,7 @@ def main():
     if sequential:
         run_sequential(**cfg, output=output, open_after=open_after)
     else:
-        run_parallel(**cfg)
+        run_parallel(**cfg, output_dir=output, open_after=open_after)
 
 
 if __name__ == '__main__':

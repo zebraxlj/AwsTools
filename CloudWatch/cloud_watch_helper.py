@@ -94,6 +94,7 @@ def filter_log_events(
         is_stop_on_match: bool = False,
         stop_event=None,
         client=None,
+        log_stream_names: Optional[List[str]] = None,
         ) -> Tuple[List[dict], FetchStats]:
     """从日志组获取所有
 
@@ -127,6 +128,8 @@ def filter_log_events(
             kwargs['endTime'] = int(dt_end.timestamp() * 1000)
         if pattern:
             kwargs['filterPattern'] = pattern
+        if log_stream_names:
+            kwargs['logStreamNames'] = log_stream_names
         if next_tkn:
             kwargs['nextToken'] = next_tkn
 

@@ -21,3 +21,20 @@ QPushButton#secondaryButton {
 QPushButton#secondaryButton:hover {
     background-color: #e0e7ff;
 }
+QPushButton#cancelButton {
+    background-color: #fbbf24;
+    color: #1f2937;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 12px;
+}
+QPushButton#cancelButton:hover {
+    background-color: #f59e0b;
+}
+QPushButton#cancelButton:pressed {
+    background-color: #d97706;
+}
+QPushButton#cancelButton:disabled {
+    background-color: #fde68a;
+    color: #6b7280;
+}

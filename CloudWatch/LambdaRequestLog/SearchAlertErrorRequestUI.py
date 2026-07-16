@@ -30,6 +30,62 @@ def load_search_style() -> str:
         return ""
 
 
+class _StreamEmitter(QtCore.QObject):
+    """把 write() 调用转成 Qt 信号，跨线程投递到 UI。"""
+
+    text_written = QtCore.pyqtSignal(str)
+
+    def write(self, text: str) -> int:
+        if text:
+            self.text_written.emit(text)
+        return len(text or "")
+
+    def flush(self) -> None:
+        pass
+
+
+class _AlertWorker(QtCore.QThread):
+    """后台跑 handle_alert；期间把 stdout/stderr/logging 重定向到 emitter。"""
+
+    finished_ok = QtCore.pyqtSignal(object)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, alert_detail, dt_start, dt_end, emitter, parent=None):
+        super().__init__(parent)
+        self._alert_detail = alert_detail
+        self._dt_start = dt_start
+        self._dt_end = dt_end
+        self._emitter = emitter
+        self.cancelled = False
+
+    def request_cancel(self) -> None:
+        # UI 层的取消：只标记不打断。后台的 AWS 调用会跑完当前一轮再自然结束。
+        self.cancelled = True
+
+    def run(self) -> None:
+        old_stdout, old_stderr = sys.stdout, sys.stderr
+        root_logger = logging.getLogger()
+        log_handler = logging.StreamHandler(self._emitter)
+        log_handler.setFormatter(logging.Formatter("%(message)s"))
+        root_logger.addHandler(log_handler)
+        sys.stdout = self._emitter
+        sys.stderr = self._emitter
+        try:
+            result = handle_alert(
+                self._alert_detail,
+                dt_start=self._dt_start,
+                dt_end=self._dt_end,
+            )
+            self.finished_ok.emit(result)
+        except Exception as exc:
+            logging.exception("handle_alert failed")
+            self.failed.emit(str(exc))
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            root_logger.removeHandler(log_handler)
+
+
 class SearchAlertErrorWidget(QtWidgets.QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -74,6 +130,12 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
         # 运行按钮
         self.run_button = QtWidgets.QPushButton("运行")
         self.run_button.setObjectName('primaryButton')
+        # 进度条（贴在运行按钮下方，跑动时才显示）
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setRange(0, 0)  # busy indicator
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("运行中...")
+        self.progress_bar.hide()
         # endregion
 
         # region layout: 运行
@@ -89,6 +151,7 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
         run_group_layout.setSpacing(8)
         run_group_layout.addLayout(run_layout)
         run_group_layout.addWidget(self.run_button)
+        run_group_layout.addWidget(self.progress_bar)
         # endregion
 
         # region 部件: 结果
@@ -132,6 +195,11 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
         output_layout = QtWidgets.QVBoxLayout()
         output_layout.addWidget(self.output_text)
         # endregion
+
+        self._worker: "_AlertWorker | None" = None
+        self._original_run_text = self.run_button.text()
+        self._output_emitter = _StreamEmitter()
+        self._output_emitter.text_written.connect(self._append_output)
 
         input_group = QtWidgets.QGroupBox("1. 输入")
         input_group.setLayout(input_layout)
@@ -186,28 +254,90 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
         logging.debug(str(alarm_info))
 
     def on_run_clicked(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            # 运行中再点 = 取消
+            self._cancel_running()
+            return
         content = self.input_text.toPlainText()
         try:
             self.alert_detail = parse_alert_detail(content)
-            result: HandleAlertResult = handle_alert(
-                self.alert_detail,
-                dt_start=self.get_start_datetime(),
-                dt_end=self.get_end_datetime(),
-            )
         except Exception as e:
             self.output_text.setPlainText(str(e))
+            return
+
+        self.output_text.clear()
+        self.error_csv_input.clear()
+        self.full_csv_input.clear()
+        self._set_running(True)
+
+        worker = _AlertWorker(
+            alert_detail=self.alert_detail,
+            dt_start=self.get_start_datetime(),
+            dt_end=self.get_end_datetime(),
+            emitter=self._output_emitter,
+            parent=self,
+        )
+        worker.finished_ok.connect(self._on_run_finished)
+        worker.failed.connect(self._on_run_failed)
+        worker.finished.connect(self._on_run_thread_finished)
+        self._worker = worker
+        worker.start()
+
+    def _cancel_running(self) -> None:
+        if self._worker is None or not self._worker.isRunning():
+            return
+        self._worker.request_cancel()
+        self.run_button.setEnabled(False)
+        self.run_button.setText("取消中...")
+        self.progress_bar.setFormat("取消中，等待当前 AWS 请求返回...")
+        self._append_output("\n[INFO] 已请求取消，等待当前 AWS 请求返回后停止。\n")
+
+    def _set_running(self, running: bool) -> None:
+        self.run_button.setEnabled(True)
+        self.run_button.setText("取消" if running else self._original_run_text)
+        self.run_button.setObjectName('cancelButton' if running else 'primaryButton')
+        # 重新走一遍 QSS，让 objectName 变化生效
+        self.run_button.style().unpolish(self.run_button)
+        self.run_button.style().polish(self.run_button)
+        self.parse_button.setEnabled(not running)
+        if running:
+            self.progress_bar.setFormat("运行中...")
+            self.progress_bar.show()
+        else:
+            self.progress_bar.hide()
+
+    def _append_output(self, text: str) -> None:
+        cursor = self.output_text.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.insertText(text)
+        self.output_text.setTextCursor(cursor)
+        self.output_text.ensureCursorVisible()
+
+    def _on_run_thread_finished(self) -> None:
+        cancelled = bool(self._worker and self._worker.cancelled)
+        self._set_running(False)
+        if cancelled:
+            self._append_output("\n[INFO] 已取消。\n")
+
+    def _on_run_finished(self, result: object) -> None:
+        if self._worker is not None and self._worker.cancelled:
             return
         if isinstance(result, HandleAlertResult):
             self.error_csv_input.setText(result.error_csv)
             self.full_csv_input.setText(result.full_csv)
             self.output_dir = os.path.dirname(result.error_csv or result.full_csv or "")
-            self.output_text.setPlainText(
-                f"ERROR CSV: {result.error_csv}\n"
+            self._append_output(
+                f"\nERROR CSV: {result.error_csv}\n"
                 f"FULL CSV: {result.full_csv}\n"
-                f"COUNTS: error={result.error_cnt} full={result.full_cnt}"
+                f"COUNTS: error={result.error_cnt} full={result.full_cnt}\n"
             )
         else:
-            self.output_text.setPlainText("Done")
+            self._append_output("\nDone\n")
+
+    def _on_run_failed(self, message: str) -> None:
+        if self._worker is not None and self._worker.cancelled:
+            return
+        self._append_output(f"\n[ERROR] {message}\n")
 
     def on_open_error_csv(self) -> None:
         self.open_file_path(self.error_csv_input.text())

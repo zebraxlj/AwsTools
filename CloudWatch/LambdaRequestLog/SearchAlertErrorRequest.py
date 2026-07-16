@@ -6,11 +6,12 @@ import platform
 import re
 import inspect
 import sys
+import threading
 from dataclasses import dataclass, fields
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
-__SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+__SCRIPT_DIR: str = os.path.dirname(os.path.abspath(__file__))
 __PROJ_DIR = os.path.dirname(os.path.dirname(__SCRIPT_DIR))
 if __PROJ_DIR not in sys.path:
     sys.path.insert(0, __PROJ_DIR)
@@ -53,6 +54,18 @@ pc_name = platform.node()
 DEFAULT_DATA_DIR = os.path.join(__SCRIPT_DIR, 'Data', 'LambdaRequestLog')
 if pc_name in {'Source-XiaLijie'}:
     DEFAULT_DATA_DIR = os.path.join(__PROJ_DIR, 'CloudWatch', 'Data', 'LambdaRequestLog')
+
+
+CancellationToken = threading.Event
+
+
+class CancelledError(Exception):
+    """handle_alert 及其内部函数在 cancel_token 被 set 后从最近的检查点抛出。"""
+
+
+def _check_cancelled(token: Optional[CancellationToken]) -> None:
+    if token is not None and token.is_set():
+        raise CancelledError('operation cancelled')
 
 
 # region HelperFunctions
@@ -220,6 +233,7 @@ def handle_alert(
         alert_detail: AlertDetail,
         dt_start: Optional[datetime] = None, dt_end: Optional[datetime] = None,
         output_dir: Optional[str] = None,
+        cancel_token: Optional[CancellationToken] = None,
 ) -> HandleAlertResult:
     alert_dt = alert_detail.alarm_dt
     alert_rgn = alert_detail.rgn
@@ -249,6 +263,7 @@ def handle_alert(
     env: Env = AllEnvs.get_env_by_name(env_name)
     client = get_log_client(alert_rgn, env)
 
+    _check_cancelled(cancel_token)
     events_all, _stats = filter_log_events(
         aws_region=alert_rgn,
         log_group_name=log_group,
@@ -257,6 +272,7 @@ def handle_alert(
         dt_end=local_dt_end,
         client=client,
     )
+    _check_cancelled(cancel_token)
 
     # 分流：first-token 是 app log_id 的 ERROR 走原路径；否则视为 orphan（handler 崩溃、无 app log_id）
     log_id_events: List[dict] = []
@@ -276,12 +292,14 @@ def handle_alert(
         aws_region=alert_rgn,
         log_group=log_group,
         orphan_events=orphan_events,
+        cancel_token=cancel_token,
     )
     orphan_full_by_key, orphan_id_by_key = fetch_orphan_full_logs(
         client=client,
         log_group=log_group,
         aws_region=alert_rgn,
         orphan_requests=orphan_requests,
+        cancel_token=cancel_token,
     )
 
     orphan_err_details = build_orphan_error_details(
@@ -303,6 +321,7 @@ def handle_alert(
     str_start = local_dt_start.strftime(FMT_DT_FILE)
     str_end = local_dt_end.strftime(FMT_DT_FILE)
 
+    _check_cancelled(cancel_token)
     # 输出 Error 日志条目
     error_file = os.path.join(
         out_dir,
@@ -338,6 +357,7 @@ def handle_alert(
                 patterns.append(rid_clean)
 
         for p in patterns:
+            _check_cancelled(cancel_token)
             events, _stats = filter_log_events(
                 aws_region=alert_rgn,
                 log_group_name=log_group,
@@ -357,6 +377,7 @@ def handle_alert(
     id_index = {log_id: idx for idx, log_id in enumerate(log_id_sorted)}
     log_details.sort(key=lambda x: (id_index[x.id], x.date_time))
 
+    _check_cancelled(cancel_token)
     # 输出 Error 事件完整日志
     full_file = os.path.join(out_dir, f'{fn_name}_{alert_rgn}_{str_start}_{str_end}_FULL.csv')
     save_log_details_to_csv(full_file, log_details)
@@ -396,6 +417,7 @@ def resolve_orphan_requests(
         aws_region: str,
         log_group: str,
         orphan_events: List[dict],
+        cancel_token: Optional[CancellationToken] = None,
 ) -> Tuple[List[OrphanRequest], int]:
     """给每条 orphan ERROR 找到它所在的请求 (stream, awsRequestId, dt_start, dt_end)，按请求去重。
 
@@ -412,6 +434,7 @@ def resolve_orphan_requests(
     resolved: Dict[Tuple[str, str], OrphanRequest] = {}
     missing_cnt = 0
     for stream, evts in by_stream.items():
+        _check_cancelled(cancel_token)
         ts_min = min(e['timestamp'] for e in evts)
         ts_max = max(e['timestamp'] for e in evts)
         win_start = datetime.fromtimestamp(
@@ -487,6 +510,7 @@ def fetch_orphan_full_logs(
         log_group: str,
         aws_region: str,
         orphan_requests: List[OrphanRequest],
+        cancel_token: Optional[CancellationToken] = None,
 ) -> Tuple[Dict[Tuple[str, str], List[LogDetail]], Dict[Tuple[str, str], str]]:
     """对每个 orphan 请求拉整段日志，并从中挑一条 app 行的 log_id 作为该请求的 id。
 
@@ -497,6 +521,7 @@ def fetch_orphan_full_logs(
     full_by_key: Dict[Tuple[str, str], List[LogDetail]] = {}
     id_by_key: Dict[Tuple[str, str], str] = {}
     for req in orphan_requests:
+        _check_cancelled(cancel_token)
         events, _stats = get_log_events(
             client=client,
             logStreamName=req.log_stream,

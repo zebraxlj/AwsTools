@@ -1,6 +1,8 @@
 import datetime
 import logging
 import os
+import shutil
+import subprocess
 import sys
 
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -101,6 +103,10 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
         self.full_csv_input.setReadOnly(True)
         self.open_full_button = QtWidgets.QPushButton("打开全量日志 csv")
         self.open_full_button.setObjectName('secondaryButton')
+
+        self.open_folder_button = QtWidgets.QPushButton("打开下载文件夹")
+        self.open_folder_button.setObjectName('secondaryButton')
+        self.output_dir = ""
         # endregion
 
         # region layout: 结果
@@ -109,6 +115,7 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
         csv_grid_layout.addWidget(self.open_error_button, 0, 1)
         csv_grid_layout.addWidget(self.full_csv_input, 1, 0)
         csv_grid_layout.addWidget(self.open_full_button, 1, 1)
+        csv_grid_layout.addWidget(self.open_folder_button, 2, 0, 1, 2)
         csv_grid_layout.setSpacing(8)
         csv_grid_layout.setColumnStretch(0, 1)
         # endregion
@@ -151,6 +158,7 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
         self.run_button.clicked.connect(self.on_run_clicked)
         self.open_error_button.clicked.connect(self.on_open_error_csv)
         self.open_full_button.clicked.connect(self.on_open_full_csv)
+        self.open_folder_button.clicked.connect(self.on_open_folder)
 
     def get_start_datetime(self) -> datetime.datetime:
         return self.start_datetime_edit.dateTime().toPyDateTime()
@@ -192,6 +200,7 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
         if isinstance(result, HandleAlertResult):
             self.error_csv_input.setText(result.error_csv)
             self.full_csv_input.setText(result.full_csv)
+            self.output_dir = os.path.dirname(result.error_csv or result.full_csv or "")
             self.output_text.setPlainText(
                 f"ERROR CSV: {result.error_csv}\n"
                 f"FULL CSV: {result.full_csv}\n"
@@ -206,6 +215,13 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
     def on_open_full_csv(self) -> None:
         self.open_file_path(self.full_csv_input.text())
 
+    def on_open_folder(self) -> None:
+        error_csv = self.error_csv_input.text().strip()
+        if error_csv and os.path.isfile(error_csv):
+            self.reveal_in_explorer(error_csv)
+            return
+        self.open_folder(self.output_dir)
+
     def open_file_path(self, path: str) -> None:
         target = path.strip()
         if not target:
@@ -215,6 +231,31 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
             self.output_text.setPlainText(f"File not found: {target}")
             return
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(target))
+
+    def open_folder(self, path: str) -> None:
+        target = (path or "").strip()
+        if not target:
+            self.output_text.setPlainText("Folder path is empty.")
+            return
+        if not os.path.isdir(target):
+            self.output_text.setPlainText(f"Folder not found: {target}")
+            return
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(target))
+
+    def reveal_in_explorer(self, file_path: str) -> None:
+        target = os.path.normpath(os.path.abspath(file_path))
+        try:
+            if sys.platform == 'win32':
+                # explorer 即使成功也常返回非 0，故不检查返回码；/select, 后必须紧跟路径。
+                subprocess.run(['explorer', f'/select,{target}'])
+                return
+            if sys.platform == 'darwin' and shutil.which('open'):
+                subprocess.run(['open', '-R', target], check=False)
+                return
+        except Exception as exc:
+            logging.error("Failed to reveal file in explorer: %s", exc)
+        # 其它平台或失败：退回到打开所在目录。
+        self.open_folder(os.path.dirname(target))
 
     def update_start_datetime_edit(self) -> None:
         text = self.offset_input.text().strip()

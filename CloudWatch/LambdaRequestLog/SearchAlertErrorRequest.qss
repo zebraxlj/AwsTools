@@ -21,6 +21,11 @@ QPushButton#secondaryButton {
 QPushButton#secondaryButton:hover {
     background-color: #e0e7ff;
 }
+QPushButton#secondaryButton:disabled {
+    background-color: #f3f4f6;
+    color: #9ca3af;
+    border: 1px solid #e5e7eb;
+}
 QPushButton#cancelButton {
     background-color: #fbbf24;
     color: #1f2937;

@@ -15,7 +15,7 @@ if __PROJ_DIR not in sys.path:
 
 from CloudWatch.cloud_watch_ui_helper import load_app_style
 from CloudWatch.LambdaRequestLog.SearchAlertErrorRequest import (  # noqa: E402
-    AlertDetail, CancelledError, handle_alert, parse_alert_detail, HandleAlertResult
+    AlertDetail, CancelledError, DEFAULT_DATA_DIR, handle_alert, parse_alert_detail, HandleAlertResult
 )
 from utils.logging_helper import setup_logging  # noqa: E402
 
@@ -360,7 +360,10 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
         if error_csv and os.path.isfile(error_csv):
             self.reveal_in_explorer(error_csv)
             return
-        self.open_folder(self.output_dir)
+        target = self.output_dir or DEFAULT_DATA_DIR
+        if target and not os.path.isdir(target):
+            os.makedirs(target, exist_ok=True)
+        self.open_folder(target)
 
     def open_file_path(self, path: str) -> None:
         target = path.strip()

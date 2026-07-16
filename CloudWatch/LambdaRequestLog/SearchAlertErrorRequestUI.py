@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -14,7 +15,7 @@ if __PROJ_DIR not in sys.path:
 
 from CloudWatch.cloud_watch_ui_helper import load_app_style
 from CloudWatch.LambdaRequestLog.SearchAlertErrorRequest import (  # noqa: E402
-    AlertDetail, handle_alert, parse_alert_detail, HandleAlertResult
+    AlertDetail, CancelledError, handle_alert, parse_alert_detail, HandleAlertResult
 )
 from utils.logging_helper import setup_logging  # noqa: E402
 
@@ -45,7 +46,9 @@ class _StreamEmitter(QtCore.QObject):
 
 
 class _AlertWorker(QtCore.QThread):
-    """后台跑 handle_alert；期间把 stdout/stderr/logging 重定向到 emitter。"""
+    """后台跑 handle_alert；期间把 stdout/stderr/logging 重定向到 emitter。
+    取消通过 cancel_token（threading.Event）传给 handle_alert，
+    handle_alert 在下一个检查点抛 CancelledError；粒度 = 一次 AWS 调用。"""
 
     finished_ok = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
@@ -56,11 +59,14 @@ class _AlertWorker(QtCore.QThread):
         self._dt_start = dt_start
         self._dt_end = dt_end
         self._emitter = emitter
-        self.cancelled = False
+        self._cancel_token = threading.Event()
 
     def request_cancel(self) -> None:
-        # UI 层的取消：只标记不打断。后台的 AWS 调用会跑完当前一轮再自然结束。
-        self.cancelled = True
+        self._cancel_token.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancel_token.is_set()
 
     def run(self) -> None:
         old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -75,8 +81,12 @@ class _AlertWorker(QtCore.QThread):
                 self._alert_detail,
                 dt_start=self._dt_start,
                 dt_end=self._dt_end,
+                cancel_token=self._cancel_token,
             )
             self.finished_ok.emit(result)
+        except CancelledError:
+            # 已取消：不发结果、不发错误；_on_run_thread_finished 会看到 cancelled=True
+            pass
         except Exception as exc:
             logging.exception("handle_alert failed")
             self.failed.emit(str(exc))
@@ -289,8 +299,8 @@ class SearchAlertErrorWidget(QtWidgets.QWidget):
         self._worker.request_cancel()
         self.run_button.setEnabled(False)
         self.run_button.setText("取消中...")
-        self.progress_bar.setFormat("取消中，等待当前 AWS 请求返回...")
-        self._append_output("\n[INFO] 已请求取消，等待当前 AWS 请求返回后停止。\n")
+        self.progress_bar.setFormat("取消中，等待下一个检查点...")
+        self._append_output("\n[INFO] 已请求取消，等待当前 AWS 调用返回后在下一个检查点停止。\n")
 
     def _set_running(self, running: bool) -> None:
         self.run_button.setEnabled(True)

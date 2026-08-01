@@ -1,11 +1,15 @@
 import argparse
 import asyncio
+import json
+import logging
 import os
 import string
 import sys
+import time
+from dataclasses import asdict
 from datetime import datetime
 from multiprocessing import Pool
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from botocore.client import Config as BotoConfig
 from botocore.exceptions import ClientError
@@ -19,6 +23,8 @@ from Lambda.lambda_info_types import Function, FunctionRow, FunctionTable  # noq
 from utils.aws_consts import REGION_ABBR, AllEnvs, Env  # noqa: E402
 from utils.aws_aiosession_helper import get_cached_aiosession  # noqa: E402
 from utils.aws_urls import get_lambda_function_url  # noqa: E402
+from utils.log_span import log_span  # noqa: E402
+from utils.SystemTools.file_system_helper import create_dir_if_not_exists  # noqa: E402
 
 # region 配置项
 ENV, SUB_ENV = AllEnvs.NemoDevMaprefine, '76700'
@@ -28,9 +34,42 @@ REGIONS = [
     'eu-central-1',
     'us-east-1',
 ]
+USE_CACHE = True
 # endregion 配置项
 
 DT_FMT = '%Y-%m-%d %H:%M:%S'
+CACHE_DIR = os.path.join(CURR_DIR_PATH, 'Data', 'output')
+CACHE_TTL_SEC = 3600
+
+
+class ResourceExplorerUnavailable(Exception):
+    """Raised when a region has no usable Resource Explorer index."""
+
+
+# region 缓存
+def _cache_path(env: Env, region: str) -> str:
+    tag = 'prod' if env.is_prod_aws else 'dev'
+    return os.path.join(CACHE_DIR, f'lambda_cache_{tag}_{env.name}_{region}.json')
+
+
+def read_cache(env: Env, region: str, ttl_sec: int = CACHE_TTL_SEC) -> Optional[List[Function]]:
+    path = _cache_path(env, region)
+    if not os.path.exists(path):
+        return None
+    age = time.time() - os.path.getmtime(path)
+    if age > ttl_sec:
+        return None
+    with open(path, 'r', encoding='utf8') as f_in:
+        data = json.load(f_in)
+    return [Function.from_dict(d) for d in data]
+
+
+def write_cache(env: Env, region: str, functions: List[Function]):
+    path = _cache_path(env, region)
+    create_dir_if_not_exists(file_path=path)
+    with open(path, 'w', encoding='utf8') as f_out:
+        json.dump([asdict(fn) for fn in functions], f_out, indent=2, ensure_ascii=False)
+# endregion 缓存
 
 
 async def get_env_rgn_functions_async(env: Env, region: str, verbose: bool = False) -> Dict[str, dict]:
@@ -45,7 +84,7 @@ async def get_env_rgn_functions_async(env: Env, region: str, verbose: bool = Fal
     """
     if verbose:
         dt_start = datetime.now()
-        print(f'{dt_start.strftime(DT_FMT)} >> Get functions for region start. region={region}')
+        logging.info(f'{dt_start.strftime(DT_FMT)} >> Get functions for region start. region={region}')
     session = get_cached_aiosession(region=region, is_prod=env.is_prod_aws)
     async with session.create_client(
         'lambda',
@@ -60,11 +99,11 @@ async def get_env_rgn_functions_async(env: Env, region: str, verbose: bool = Fal
                 resp = await client.list_functions(**param)  # type: ignore
             except ClientError as e:
                 if 'ExpiredTokenException' in e.response['Error']['Code']:
-                    # handle_expired_token_exception is not async, so just print and skip
-                    print("ExpiredTokenException, please refresh your credentials.")
+                    # handle_expired_token_exception is not async, so just log and skip
+                    logging.error("ExpiredTokenException, please refresh your credentials.")
                     return {}
                 else:
-                    print(f'Exception: {e.__dict__}')
+                    logging.error(f'Exception: {e.__dict__}')
                 break
             if resp.get('ResponseMetadata', {}).get('HTTPStatusCode', 0) != 200:
                 raise Exception(f'non 200 code: {resp}')
@@ -74,7 +113,7 @@ async def get_env_rgn_functions_async(env: Env, region: str, verbose: bool = Fal
                 break
         if verbose:
             dt_stop = datetime.now()
-            print(
+            logging.info(
                 f'{dt_stop.strftime(DT_FMT)} >> Get functions for region stop. region={region}, '
                 f'span={(dt_stop - dt_start).total_seconds()}s'
             )
@@ -118,7 +157,7 @@ async def get_all_function_concurrency(env: Env, fn_list: List[Function]) -> Dic
                         resp = await client.get_function_concurrency(FunctionName=fn.FunctionName)  # type: ignore
                         concurrency_data[fn.FunctionName] = resp
                     except ClientError as e:
-                        print(f"[{region}] Error fetching {fn.FunctionName}: {e}")
+                        logging.warning(f"[{region}] Error fetching {fn.FunctionName}: {e}")
                         concurrency_data[fn.FunctionName] = {}
 
             await asyncio.gather(*(get_concurrency(fn) for fn in fn_group))
@@ -138,7 +177,7 @@ async def get_function_currency_async(env: Env, region: str, function_name: str)
             resp = await client.get_function_concurrency(FunctionName=function_name)  # type: ignore
             return resp
         except ClientError as e:
-            print(f'Exception: {e.__dict__}')
+            logging.warning(f'Exception: {e.__dict__}')
             return {}
 
 
@@ -172,6 +211,109 @@ def handle_function_n_ccy(fn_fn_ccy: List[Tuple[Function, dict]]):
     table.print_table(order_by=['FunctionName', 'Region'])
 
 
+@log_span(log_args=True, arg_names=['region'])
+async def _fetch_via_list_functions(env: Env, region: str) -> List[Function]:
+    """通过 list_functions 拉取函数列表（用于 cn-* 及回落场景）。"""
+    fn_dict = await get_env_rgn_functions_async(env, region)
+    return [Function.from_dict(v) for v in fn_dict.values()]
+
+
+@log_span(log_args=True, arg_names=['region'])
+async def _fetch_via_resource_explorer(env: Env, region: str) -> List[Function]:
+    """通过 Resource Explorer 查询 Lambda ARN，再并发拉取每个函数完整配置。
+    RE 不返回 Timeout/MemorySize/LastModified，所以还得调 get_function 补全。
+    """
+    session = get_cached_aiosession(region=region, is_prod=env.is_prod_aws)
+
+    # 只要 function 本体（跳过 versions/aliases/layers），name 交给客户端做
+    query = 'resourcetype:AWS::Lambda::Function'
+    all_arns: List[str] = []
+    total_returned = 0
+    async with session.create_client(
+        'resource-explorer-2', region_name=region,
+        config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}),
+    ) as re_client:
+        next_token = None
+        try:
+            while True:
+                params = {'QueryString': query, 'MaxResults': 1000}
+                if next_token:
+                    params['NextToken'] = next_token
+                resp = await re_client.search(**params)  # type: ignore
+                resources = resp.get('Resources', [])
+                total_returned += len(resources)
+                for r in resources:
+                    arn = r.get('Arn', '')
+                    if ':function:' in arn:
+                        all_arns.append(arn)
+                next_token = resp.get('NextToken')
+                if not next_token:
+                    break
+        except ClientError as e:
+            code = e.response.get('Error', {}).get('Code', '')
+            if code in ('ValidationException', 'ResourceNotFoundException', 'AccessDeniedException'):
+                raise ResourceExplorerUnavailable(f'{region}: {code}')
+            raise
+
+    # 客户端按 env 名字过滤
+    arns = [a for a in all_arns if a.split(':function:')[1].startswith(env.name)]
+    logging.info(
+        f'[{region}] RE returned {total_returned} resources '
+        f'({len(all_arns)} lambda ARNs, {len(arns)} match env "{env.name}")'
+    )
+
+    if not arns:
+        return []
+
+    async with session.create_client(
+        'lambda', region_name=region,
+        config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}, max_pool_connections=50),
+    ) as lambda_client:
+        semaphore = asyncio.Semaphore(20 if region.startswith('cn-') else 10)
+
+        async def fetch(arn: str) -> Optional[Function]:
+            async with semaphore:
+                try:
+                    resp = await lambda_client.get_function(FunctionName=arn)  # type: ignore
+                    return Function.from_dict(resp['Configuration'])
+                except ClientError as e:
+                    logging.warning(f'[{region}] get_function {arn} failed: {e}')
+                    return None
+
+        results = await asyncio.gather(*(fetch(a) for a in arns))
+    return [r for r in results if r is not None]
+
+
+async def get_functions_in_region(
+        env: Env, region: str, use_cache: bool = True,
+) -> Tuple[List[Function], str]:
+    """统一入口：命中缓存直接返回；否则按 partition 分路径拉取，写缓存。
+
+    Returns:
+        (functions, source) source ∈ {'cache', 'list_functions', 'resource_explorer', 'list_functions_fallback'}
+    """
+    if use_cache:
+        cached = read_cache(env, region)
+        if cached is not None:
+            logging.info(f'[{region}] source=cache count={len(cached)}')
+            return cached, 'cache'
+
+    if region.startswith('cn-'):
+        functions = await _fetch_via_list_functions(env, region)
+        source = 'list_functions'
+    else:
+        try:
+            functions = await _fetch_via_resource_explorer(env, region)
+            source = 'resource_explorer'
+        except ResourceExplorerUnavailable as e:
+            logging.warning(f'[{region}] Resource Explorer unavailable ({e}), falling back to list_functions')
+            functions = await _fetch_via_list_functions(env, region)
+            source = 'list_functions_fallback'
+
+    write_cache(env, region, functions)
+    return functions, source
+
+
 async def region_function_coroutine(rgn: str) -> Dict[str, Tuple[Function, dict]]:
     """获取地区内所有函数信息和并发设置
 
@@ -181,10 +323,11 @@ async def region_function_coroutine(rgn: str) -> Dict[str, Tuple[Function, dict]
     Returns:
         Dict[str, Tuple[Function, dict]]: key为函数名，value为函数对象、并发设置的元组
     """
-    fn_dict: Dict[str, dict] = await get_env_rgn_functions_async(ENV, rgn)
+    functions, source = await get_functions_in_region(ENV, rgn, use_cache=USE_CACHE)
 
     fn_curr_env_rgn: List[Function] = []
-    for fn_name, fn_info in fn_dict.items():
+    for fn in functions:
+        fn_name = fn.FunctionName
         is_env_main, is_env_sub = False, False
         if not fn_name.startswith(ENV.name):
             continue
@@ -196,7 +339,9 @@ async def region_function_coroutine(rgn: str) -> Dict[str, Tuple[Function, dict]
             is_env_main = True
         if not (is_env_main or is_env_sub):
             continue
-        fn_curr_env_rgn.append(Function.from_dict(fn_info))
+        fn_curr_env_rgn.append(fn)
+
+    logging.info(f'[{rgn}] matched={len(fn_curr_env_rgn)} (from count={len(functions)})')
 
     fn_ccy = await get_all_function_concurrency(ENV, fn_curr_env_rgn)
 
@@ -204,7 +349,21 @@ async def region_function_coroutine(rgn: str) -> Dict[str, Tuple[Function, dict]
     return ret
 
 
+def _setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(filename)s:%(funcName)s:%(lineno)d [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
+    # 屏蔽第三方库的 INFO 噪音（凭证加载、HTTP 连接池等）
+    for noisy in ('botocore', 'boto3', 'aiobotocore', 'urllib3', 's3transfer'):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
 def region_function_task(region: str):
+    # Windows spawn 下子进程不继承 parent 的全局变量修改，需要重新读一次 CLI 参数
+    _setup_logging()
+    load_global_vars()
     return asyncio.run(region_function_coroutine(region))
 
 
@@ -216,12 +375,15 @@ async def main_coroutine():
 
 
 def main_coroutine_sync():
+    _setup_logging()
+    load_global_vars()
     ret = asyncio.run(main_coroutine())
     if ret:
-        print(f'Error: {ret}')
+        logging.error(f'Error: {ret}')
 
 
 def main_multiprocess():
+    _setup_logging()
     load_global_vars()
 
     results: List[Dict[str, Tuple[Function, dict]]]
@@ -232,11 +394,11 @@ def main_multiprocess():
 
 
 def load_global_vars():
-    global ENV, SUB_ENV, REGIONS
+    global ENV, SUB_ENV, REGIONS, USE_CACHE
 
     sys_args = sys.argv[1:]
     if os.environ.get('TERM_PROGRAM', None) == 'vscode':
-        print('VsCode 本地调试')
+        logging.info('VsCode 本地调试')
         sys_args = ['-en', 'NemoDev-maprefine', '-sen', '76700', '-rgn', 'NX', 'AP', 'US', 'EU']
 
     args = parse_args(sys_args)
@@ -247,6 +409,7 @@ def load_global_vars():
     REGIONS = arg_regions
     ENV = AllEnvs.get_env_by_name(args.environment_name)
     SUB_ENV = args.sub_environment_name
+    USE_CACHE = not args.no_cache
 
 
 def parse_args(args: List[str]):
@@ -268,6 +431,11 @@ def parse_args(args: List[str]):
         help='List of regions',
         default=REGIONS,
         nargs='+',
+    )
+    parser.add_argument(
+        '--no-cache', '-nc',
+        help='跳过本地缓存，强制重新拉取（拉完仍会写入缓存）',
+        action='store_true',
     )
     return parser.parse_args(args)
 

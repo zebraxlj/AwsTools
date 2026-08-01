@@ -37,7 +37,6 @@ REGIONS = [
 USE_CACHE = True
 # endregion 配置项
 
-DT_FMT = '%Y-%m-%d %H:%M:%S'
 CACHE_DIR = os.path.join(CURR_DIR_PATH, 'Data', 'output')
 CACHE_TTL_SEC = 3600
 
@@ -72,26 +71,16 @@ def write_cache(env: Env, region: str, functions: List[Function]):
 # endregion 缓存
 
 
-async def get_env_rgn_functions_async(env: Env, region: str, verbose: bool = False) -> Dict[str, dict]:
-    """_summary_
-
-    Args:
-        env (Env): environment
-        region (str): AWS region
-
-    Returns:
-        Dict[str, dict]: key为函数名，value为函数信息的字典
-    """
-    if verbose:
-        dt_start = datetime.now()
-        logging.info(f'{dt_start.strftime(DT_FMT)} >> Get functions for region start. region={region}')
+@log_span(log_args=True, arg_names=['region'])
+async def _fetch_via_list_functions(env: Env, region: str) -> List[Function]:
+    """通过 list_functions 分页拉取一个 region 内所有 Lambda 函数（用于 cn-* 及 RE 回落场景）。"""
     session = get_cached_aiosession(region=region, is_prod=env.is_prod_aws)
     async with session.create_client(
         'lambda',
         region_name=region,
         config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}, max_pool_connections=50)
     ) as client:
-        functions = []
+        raw_functions: List[dict] = []
         marker = None
         while True:
             param = {'Marker': marker} if marker else dict()
@@ -101,26 +90,89 @@ async def get_env_rgn_functions_async(env: Env, region: str, verbose: bool = Fal
                 if 'ExpiredTokenException' in e.response['Error']['Code']:
                     # handle_expired_token_exception is not async, so just log and skip
                     logging.error("ExpiredTokenException, please refresh your credentials.")
-                    return {}
+                    return []
                 else:
                     logging.error(f'Exception: {e.__dict__}')
                 break
             if resp.get('ResponseMetadata', {}).get('HTTPStatusCode', 0) != 200:
                 raise Exception(f'non 200 code: {resp}')
             marker = resp.get('NextMarker', '')
-            functions += resp.get('Functions', [])
+            raw_functions += resp.get('Functions', [])
             if not marker:
                 break
-        if verbose:
-            dt_stop = datetime.now()
-            logging.info(
-                f'{dt_stop.strftime(DT_FMT)} >> Get functions for region stop. region={region}, '
-                f'span={(dt_stop - dt_start).total_seconds()}s'
-            )
-        return {fn['FunctionName']: fn for fn in functions if 'FunctionName' in fn}
+        return [Function.from_dict(fn) for fn in raw_functions if 'FunctionName' in fn]
 
 
-_RGN_SEMAPHORE: Dict[str, asyncio.Semaphore] = {}  # tune this based on your observed rate limits
+@log_span(log_args=True, arg_names=['region'])
+async def _fetch_via_resource_explorer(env: Env, region: str) -> List[Function]:
+    """通过 Resource Explorer 查询 Lambda ARN，再并发拉取每个函数完整配置。
+    RE 不返回 Timeout/MemorySize/LastModified，所以还得调 get_function 补全。
+    实际效果一般，只能只能省几秒，原因应该是 filter 的 paging 太多
+    """
+    session = get_cached_aiosession(region=region, is_prod=env.is_prod_aws)
+
+    # 只要 function 本体（跳过 versions/aliases/layers），name 交给客户端做
+    query = 'resourcetype:AWS::Lambda::Function'
+    all_arns: List[str] = []
+    total_returned = 0
+    async with session.create_client(
+        'resource-explorer-2', region_name=region,
+        config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}),
+    ) as re_client:
+        next_token = None
+        try:
+            while True:
+                params = {'QueryString': query, 'MaxResults': 1000}
+                if next_token:
+                    params['NextToken'] = next_token
+                resp = await re_client.search(**params)  # type: ignore
+                resources = resp.get('Resources', [])
+                total_returned += len(resources)
+                for r in resources:
+                    arn = r.get('Arn', '')
+                    if ':function:' in arn:
+                        all_arns.append(arn)
+                next_token = resp.get('NextToken')
+                if not next_token:
+                    break
+        except ClientError as e:
+            code = e.response.get('Error', {}).get('Code', '')
+            if code in ('ValidationException', 'ResourceNotFoundException', 'AccessDeniedException'):
+                raise ResourceExplorerUnavailable(f'{region}: {code}')
+            raise
+
+    # 客户端按 env 名字过滤
+    arns = [a for a in all_arns if a.split(':function:')[1].startswith(env.name)]
+    logging.info(
+        f'[{region}] RE returned {total_returned} resources '
+        f'({len(all_arns)} lambda ARNs, {len(arns)} match env "{env.name}")'
+    )
+
+    if not arns:
+        return []
+
+    async with session.create_client(
+        'lambda', region_name=region,
+        config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}, max_pool_connections=50),
+    ) as lambda_client:
+        semaphore = _make_lambda_semaphore(region)
+
+        async def fetch(arn: str) -> Optional[Function]:
+            async with semaphore:
+                try:
+                    resp = await lambda_client.get_function(FunctionName=arn)  # type: ignore
+                    return Function.from_dict(resp['Configuration'])
+                except ClientError as e:
+                    logging.warning(f'[{region}] get_function {arn} failed: {e}')
+                    return None
+
+        results = await asyncio.gather(*(fetch(a) for a in arns))
+    return [r for r in results if r is not None]
+
+
+def _make_lambda_semaphore(region: str) -> asyncio.Semaphore:
+    """Lambda 控制面 API 并发上限（cn-* 网络更近，可以放宽一点）。"""
+    return asyncio.Semaphore(20 if region.startswith('cn-') else 10)
 
 
 async def get_all_function_concurrency(env: Env, fn_list: List[Function]) -> Dict[str, dict]:
@@ -145,13 +197,9 @@ async def get_all_function_concurrency(env: Env, fn_list: List[Function]) -> Dic
             region_name=region,
             config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}, max_pool_connections=50)
         ) as client:
+            semaphore = _make_lambda_semaphore(region)
+
             async def get_concurrency(fn: Function):
-                if region not in _RGN_SEMAPHORE:
-                    if region.startswith('cn-'):
-                        _RGN_SEMAPHORE[region] = asyncio.Semaphore(20)
-                    else:
-                        _RGN_SEMAPHORE[region] = asyncio.Semaphore(10)
-                semaphore = _RGN_SEMAPHORE[region]
                 async with semaphore:
                     try:
                         resp = await client.get_function_concurrency(FunctionName=fn.FunctionName)  # type: ignore
@@ -209,79 +257,6 @@ def handle_function_n_ccy(fn_fn_ccy: List[Tuple[Function, dict]]):
             FunctionName_href=get_lambda_function_url(fn_rgn, fn.FunctionName),
         ))
     table.print_table(order_by=['FunctionName', 'Region'])
-
-
-@log_span(log_args=True, arg_names=['region'])
-async def _fetch_via_list_functions(env: Env, region: str) -> List[Function]:
-    """通过 list_functions 拉取函数列表（用于 cn-* 及回落场景）。"""
-    fn_dict = await get_env_rgn_functions_async(env, region)
-    return [Function.from_dict(v) for v in fn_dict.values()]
-
-
-@log_span(log_args=True, arg_names=['region'])
-async def _fetch_via_resource_explorer(env: Env, region: str) -> List[Function]:
-    """通过 Resource Explorer 查询 Lambda ARN，再并发拉取每个函数完整配置。
-    RE 不返回 Timeout/MemorySize/LastModified，所以还得调 get_function 补全。
-    """
-    session = get_cached_aiosession(region=region, is_prod=env.is_prod_aws)
-
-    # 只要 function 本体（跳过 versions/aliases/layers），name 交给客户端做
-    query = 'resourcetype:AWS::Lambda::Function'
-    all_arns: List[str] = []
-    total_returned = 0
-    async with session.create_client(
-        'resource-explorer-2', region_name=region,
-        config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}),
-    ) as re_client:
-        next_token = None
-        try:
-            while True:
-                params = {'QueryString': query, 'MaxResults': 1000}
-                if next_token:
-                    params['NextToken'] = next_token
-                resp = await re_client.search(**params)  # type: ignore
-                resources = resp.get('Resources', [])
-                total_returned += len(resources)
-                for r in resources:
-                    arn = r.get('Arn', '')
-                    if ':function:' in arn:
-                        all_arns.append(arn)
-                next_token = resp.get('NextToken')
-                if not next_token:
-                    break
-        except ClientError as e:
-            code = e.response.get('Error', {}).get('Code', '')
-            if code in ('ValidationException', 'ResourceNotFoundException', 'AccessDeniedException'):
-                raise ResourceExplorerUnavailable(f'{region}: {code}')
-            raise
-
-    # 客户端按 env 名字过滤
-    arns = [a for a in all_arns if a.split(':function:')[1].startswith(env.name)]
-    logging.info(
-        f'[{region}] RE returned {total_returned} resources '
-        f'({len(all_arns)} lambda ARNs, {len(arns)} match env "{env.name}")'
-    )
-
-    if not arns:
-        return []
-
-    async with session.create_client(
-        'lambda', region_name=region,
-        config=BotoConfig(connect_timeout=3, retries={"mode": "standard"}, max_pool_connections=50),
-    ) as lambda_client:
-        semaphore = asyncio.Semaphore(20 if region.startswith('cn-') else 10)
-
-        async def fetch(arn: str) -> Optional[Function]:
-            async with semaphore:
-                try:
-                    resp = await lambda_client.get_function(FunctionName=arn)  # type: ignore
-                    return Function.from_dict(resp['Configuration'])
-                except ClientError as e:
-                    logging.warning(f'[{region}] get_function {arn} failed: {e}')
-                    return None
-
-        results = await asyncio.gather(*(fetch(a) for a in arns))
-    return [r for r in results if r is not None]
 
 
 async def get_functions_in_region(

@@ -29,6 +29,24 @@ def create_app() -> QApplication:
     return app
 
 
+def _shutdown_page(page: QWidget) -> None:
+    """
+    调用页面可选实现的 shutdown()，让它取消后台 worker。
+
+    不做这一步的话，页面内自建的 QThreadPool 析构时会 waitForDone()，
+    一直等到限速队列跑完（几百个日志组 @5TPS 可达数分钟）；且那时 worker
+    的 signals 已随 widget 销毁，emit 会抛
+    RuntimeError: wrapped C/C++ object ... has been deleted。
+    """
+    shutdown = getattr(page, "shutdown", None)
+    if not callable(shutdown):
+        return
+    try:
+        shutdown()
+    except Exception:
+        logging.exception("page shutdown failed: %s", type(page).__name__)
+
+
 class MainWindow(QMainWindow):
     """主窗口：Tab 容器，每个功能模块一个 tab"""
 
@@ -45,6 +63,12 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(MfaWidget(), "MFA 管理")
         # 以后新增功能只需加一行：
         # self.tabs.addTab(CloudWatchWidget(), "CloudWatch")
+
+    def closeEvent(self, event):
+        """关闭前依次通知各 tab 清理（取消后台 worker），再走默认关闭流程。"""
+        for i in range(self.tabs.count()):
+            _shutdown_page(self.tabs.widget(i))
+        super().closeEvent(event)
 
 
 def run_app():
@@ -64,6 +88,8 @@ def run_single_widget(widget_factory, title: str = "AWS Tools — Dev",
     """
     app = create_app()
     widget = widget_factory()
+    # 独立窗口没有 MainWindow 的 closeEvent，改挂 aboutToQuit 做同样的清理
+    app.aboutToQuit.connect(lambda: _shutdown_page(widget))
     window = QMainWindow()
     window.setWindowTitle(title)
     window.setCentralWidget(widget)

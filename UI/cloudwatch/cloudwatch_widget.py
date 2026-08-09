@@ -136,6 +136,10 @@ class CloudWatchWidget(QWidget):
         # generation counter：每次切换账号/地区/刷新时 +1，worker 回调时核对
         self._generation = 0
 
+        # 当前在跑的 worker，供切换查询 / 关闭窗口时主动取消
+        self._list_worker: Optional[FetchLogGroupsWorker] = None
+        self._ingestion_worker: Optional[FetchIngestionTimeWorker] = None
+
         # profile_name → MfaProfile，用于填地区列表
         self._profile_map: dict[str, MfaProfile] = {}
         # log_group_name → QStandardItem (最后写入列)，供第二阶段逐条回填
@@ -378,8 +382,10 @@ class CloudWatchWidget(QWidget):
         if not profile_name or not region:
             return
 
-        # 递增 generation，使旧 worker 的回调失效
+        # 递增 generation 使旧 worker 的回调失效，并主动取消它们
+        # （只靠 generation 的话旧 worker 仍在按 5 TPS 打 AWS，多切几次必被限流）
         self._generation += 1
+        self._cancel_pending()
 
         if not force_fetch:
             groups, fetched_at = load_cache(profile_name, region)
@@ -400,7 +406,31 @@ class CloudWatchWidget(QWidget):
         worker.signals.finished.connect(
             lambda groups, ts, err, _g=gen: self._on_fetch_finished(groups, ts, err, _g)
         )
+        self._list_worker = worker
         self._thread_pool.start(worker)
+
+    # ── 后台 worker 生命周期 ─────────────────────────────
+
+    def _cancel_pending(self):
+        """取消所有在跑的 worker（切换账号/地区、刷新、关闭窗口时调用）。"""
+        for worker in (self._list_worker, self._ingestion_worker):
+            if worker is not None:
+                worker.cancel()
+        self._list_worker = None
+        self._ingestion_worker = None
+
+    def shutdown(self):
+        """
+        窗口关闭前的清理，由 MainWindow.closeEvent 调用。
+
+        不取消就直接退出的话，QThreadPool 析构会 waitForDone() 等到限速队列
+        跑完（可达数分钟），且期间 worker 的 signals 已被销毁，emit 会抛
+        RuntimeError: wrapped C/C++ object ... has been deleted。
+        """
+        self._cancel_pending()
+        self._age_timer.stop()
+        self._click_timer.stop()
+        self._thread_pool.waitForDone(3000)
 
     # ── 事件处理 ─────────────────────────────────────────
 
@@ -458,6 +488,7 @@ class CloudWatchWidget(QWidget):
         if gen != self._generation:
             return
 
+        self._list_worker = None
         self._refresh_btn.setEnabled(True)
         self._account_combo.setEnabled(True)
         self._region_combo.setEnabled(True)
@@ -517,6 +548,7 @@ class CloudWatchWidget(QWidget):
         worker.signals.all_done.connect(
             lambda _g=gen: self._on_ingestion_all_done(_g)
         )
+        self._ingestion_worker = worker
         self._thread_pool.start(worker)
 
     def _on_ingestion_item_ready(self, log_group_name: str, ts: Optional[datetime], gen: int):
@@ -536,6 +568,7 @@ class CloudWatchWidget(QWidget):
     def _on_ingestion_all_done(self, gen: int):
         if gen != self._generation:
             return
+        self._ingestion_worker = None
         profile_name = self._current_profile_name()
         region = self._current_region()
         if profile_name and region and self._all_groups:

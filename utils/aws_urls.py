@@ -73,6 +73,50 @@ def get_s3_bucket_url(region: str, bucket_name: str) -> str:
         return f'https://{region}.console.aws.amazon.com/s3/buckets/{bucket_name}?region={region}'
 
 
+def get_cloud_watch_log_group_url(region: str, log_group_name: str) -> str:
+    """
+    获取 CloudWatch 日志组的 URL
+    :param region: AWS 区域
+    :param log_group_name: 日志组名称
+    :return: 日志组的 URL
+    """
+    log_group_name = mask_url_part(log_group_name)
+    if region.startswith('cn'):
+        return f'https://{region}.console.amazonaws.cn/cloudwatch/home?region={region}#logsV2:log-groups/log-group/{log_group_name}'  # noqa: E501
+    else:
+        return f'https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#logsV2:log-groups/log-group/{log_group_name}'  # noqa: E501
+
+
+def get_cloud_watch_log_group_all_events_url(
+        region: str, log_group_name: str,
+        ts_start_ms: Optional[int] = None, ts_end_ms: Optional[int] = None, pattern: Optional[str] = None,
+) -> str:
+    # ts_start_ms, ts_end_ms = 1751904000000, 1751990399000
+    # pattern = 'asdf'
+    # log_group_url = '''
+    # https://cn-northwest-1.console.amazonaws.cn/cloudwatch/home?region=cn-northwest-1#logsV2:log-groups/log-group/$252Faws$252Flambda$252FStandalone--39669-PhoneCertFunction/
+    # log-events$3Fstart$3D1751904000000$26end$3D1751990399000$26filterPattern$3Dasdf'''
+
+    def validate_ts_ms(ts: int) -> None:
+        if ts < 0:
+            raise ValueError(f'Timestamp in milliseconds must be a positive integer, got {ts}')
+        digits = len(str(ts))
+        if digits < 13 or digits > 16:
+            raise ValueError(f'Timestamp in milliseconds must be between 13 and 16 digits, got {ts}({digits} digits)')
+    log_group_url = get_cloud_watch_log_group_url(region, log_group_name)
+    params = {}
+    if ts_start_ms is not None:
+        validate_ts_ms(ts_start_ms)
+        params['start'] = ts_start_ms
+    if ts_end_ms is not None:
+        validate_ts_ms(ts_end_ms)
+        params['end'] = ts_end_ms
+    if pattern is not None:
+        params['filterPattern'] = pattern
+
+    return f'{log_group_url}/log-events$3F' + mask_url_part(parse.urlencode(params))
+
+
 def mask_url_part(part: str) -> str:
     """ 转换为 HTML 码 """
     mappings = {

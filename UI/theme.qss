@@ -103,31 +103,36 @@ QScrollBar::sub-page:horizontal {
 
 
 /* ════════════════════════════════════════════════════════
-   Tab 栏
+   左侧导航栏
    ════════════════════════════════════════════════════════ */
 
-QTabWidget::pane {
-    border: none;
-    background-color: #f5f5f5;
+QWidget#navBar {
+    background-color: #e7e0ec;
+    border-right: 1px solid #cac4d0;
 }
 
-QTabBar::tab {
-    background-color: #e7e0ec;
+QPushButton#navBtn {
+    background-color: transparent;
     color: #49454f;
     border: none;
-    padding: 10px 24px;
+    border-radius: 12px;
+    padding: 12px 10px;
     font-size: 14px;
     font-weight: bold;
-    margin-right: 2px;
+    text-align: center;
 }
 
-QTabBar::tab:selected {
+QPushButton#navBtn:hover {
+    background-color: #d8cee8;
+}
+
+QPushButton#navBtn:checked {
     background-color: #ffffff;
     color: #6750a4;
 }
 
-QTabBar::tab:hover:!selected {
-    background-color: #d8cee8;
+QPushButton#navBtn:pressed {
+    background-color: #c9bfda;
 }
 
 
@@ -140,6 +145,18 @@ QLabel#headerTitle {
     font-weight: bold;
     color: #1c1b1f;
 }
+
+QPushButton#openDirBtn {
+    background-color: #e8def8;
+    color: #1d192b;
+    border: none;
+    border-radius: 17px;
+    padding: 8px 20px;
+    font-size: 14px;
+    font-weight: bold;
+}
+QPushButton#openDirBtn:hover  { background-color: #d8cee8; }
+QPushButton#openDirBtn:pressed { background-color: #c9bfda; }
 
 QPushButton#reloadBtn {
     background-color: #e8def8;
@@ -373,3 +390,215 @@ QLabel#toastError {
     font-size: 14px;
     font-weight: bold;
 }
+
+
+/* ════════════════════════════════════════════════════════
+   CloudWatch Log Groups 页 — Material Design 3 风格
+   主色: #e8371b (CloudWatch 红)
+   配色：
+     Surface:          #ffffff
+     Surface Container: #f5f0f0
+     On-Surface:       #1c1b1f
+     On-Surface-Var:   #49454f
+     Outline:          #c4c0c0
+     Primary:          #e8371b
+     Primary Hover:    #c62e14
+     Primary Container:#fde8e5
+     On-Primary-Cont:  #8c1d0f
+   ════════════════════════════════════════════════════════ */
+
+
+/* ── 页面标题 ─────────────────────────────────────────── */
+
+QLabel#cwHeaderTitle {
+    font-size: 22px;
+    font-weight: bold;
+    color: #1c1b1f;
+}
+
+
+/* ── 下拉菜单（Filled style） ─────────────────────────── */
+
+QComboBox#cwAccountCombo,
+QComboBox#cwRegionCombo {
+    border: none;
+    border-bottom: 2px solid #c4c0c0;
+    border-radius: 4px 4px 0 0;        /* 上圆角、下直角 — Filled 特征 */
+    padding: 8px 32px 8px 12px;
+    font-size: 14px;
+    background-color: #f5f0f0;
+    color: #1c1b1f;
+    min-height: 28px;
+}
+
+QComboBox#cwAccountCombo:hover,
+QComboBox#cwRegionCombo:hover {
+    background-color: #ebe6e6;
+    border-bottom-color: #1c1b1f;
+}
+
+QComboBox#cwAccountCombo:focus,
+QComboBox#cwRegionCombo:focus {
+    border-bottom: 2px solid #e8371b;
+}
+
+QComboBox#cwAccountCombo::drop-down,
+QComboBox#cwRegionCombo::drop-down {
+    subcontrol-position: center right;
+    subcontrol-origin: padding;
+    width: 28px;
+    border: none;
+}
+
+QComboBox#cwAccountCombo::down-arrow,
+QComboBox#cwRegionCombo::down-arrow {
+    image: none;
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #49454f;
+}
+
+QComboBox#cwAccountCombo QAbstractItemView,
+QComboBox#cwRegionCombo QAbstractItemView {
+    border: 1px solid #c4c0c0;
+    border-radius: 4px;
+    background-color: #ffffff;
+    padding: 4px 0;
+    outline: none;
+    selection-background-color: #fde8e5;
+    selection-color: #8c1d0f;
+}
+
+
+/* ── 刷新按钮（Filled Tonal） ─────────────────────────── */
+
+QPushButton#cwRefreshBtn {
+    background-color: #e8371b;
+    color: #ffffff;
+    border: none;
+    border-radius: 20px;
+    padding: 10px 24px;
+    font-size: 14px;
+    font-weight: bold;
+}
+QPushButton#cwRefreshBtn:hover   { background-color: #c62e14; }
+QPushButton#cwRefreshBtn:pressed { background-color: #a82610; }
+QPushButton#cwRefreshBtn:disabled {
+    background-color: rgba(28,27,31,0.12);
+    color: rgba(28,27,31,0.38);
+}
+
+
+/* ── 搜索框（Outlined Text Field） ────────────────────── */
+
+QLineEdit#cwSearchEdit {
+    border: 1px solid #c4c0c0;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 15px;
+    background-color: #ffffff;
+    color: #1c1b1f;
+}
+QLineEdit#cwSearchEdit:focus {
+    border: 2px solid #e8371b;
+    padding: 7px 11px;
+}
+
+
+/* ── 数据表（MD3 Data Table — 卡片容器） ──────────────── */
+
+QFrame#cwTableCard {
+    background-color: #ffffff;
+    border-radius: 12px;
+    border: 1px solid #c4c0c0;
+}
+
+QTableView#cwTable {
+    background-color: transparent;
+    border: none;
+    font-size: 14px;
+    outline: none;                       /* 去焦点虚线框 */
+}
+
+/* 行：无网格线，仅底部细分隔线 */
+QTableView#cwTable::item {
+    padding: 12px 16px;
+    border: none;
+    border-bottom: 1px solid #e8e4e4;   /* 极浅横线 */
+    color: #1c1b1f;
+}
+
+/* 选中行：柔和浅色高亮 */
+QTableView#cwTable::item:selected {
+    background-color: #fde8e5;
+    color: #1c1b1f;
+}
+
+/* Hover 行 */
+QTableView#cwTable::item:hover:!selected {
+    background-color: #f5f0f0;
+}
+
+/* 表头 — 无背景填充，靠粗体 + 小字号区分 */
+QTableView#cwTable QHeaderView {
+    background-color: transparent;
+}
+
+QTableView#cwTable QHeaderView::section {
+    background-color: transparent;
+    color: #49454f;
+    font-size: 13px;
+    font-weight: bold;
+    padding: 12px 16px;
+    border: none;
+    border-bottom: 1px solid #c4c0c0;   /* 表头下方加重分隔线 */
+}
+
+/* 排序指示器 */
+QTableView#cwTable QHeaderView::down-arrow {
+    image: none;
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #e8371b;
+    margin-left: 6px;
+}
+
+QTableView#cwTable QHeaderView::up-arrow {
+    image: none;
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid #e8371b;
+    margin-left: 6px;
+}
+
+
+/* ── 状态栏 ───────────────────────────────────────────── */
+
+QLabel#cwStatusLabel {
+    font-size: 13px;
+    color: #49454f;
+    padding: 4px 0;
+}
+
+QLabel#cwStatusLabel[error="true"] {
+    color: #c62e14;
+    font-weight: bold;
+}
+
+
+/* ── 打开缓存目录按钮（Text Button） ─────────────────── */
+
+QPushButton#cwOpenCacheBtn {
+    background-color: transparent;
+    color: #e8371b;
+    border: none;
+    border-radius: 20px;
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: bold;
+}
+QPushButton#cwOpenCacheBtn:hover  { background-color: rgba(232,55,27,0.08); }
+QPushButton#cwOpenCacheBtn:pressed { background-color: rgba(232,55,27,0.16); }

@@ -5,13 +5,15 @@ MFA 标签页 Widget：Material Design 风格。
 本文件不调用任何 setStyleSheet —— 所有样式由 app.py 加载的 theme.qss 统一控制。
 """
 
-from PyQt5.QtCore import Qt, QTimer
+from pathlib import Path
+
+from PyQt5.QtCore import Qt, QTimer, QUrl
+from PyQt5.QtGui import QColor, QDesktopServices
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QFrame,
     QGraphicsDropShadowEffect,
 )
-from PyQt5.QtGui import QColor
 
 from UI.mfa.mfa_controller import MfaController, GroupedProfiles
 from UI.mfa.profile_card import ProfileCard
@@ -82,6 +84,12 @@ class MfaWidget(QWidget):
         title.setObjectName("headerTitle")
         header_layout.addWidget(title)
 
+        self.open_dir_btn = QPushButton("📂 配置目录")
+        self.open_dir_btn.setObjectName("openDirBtn")
+        self.open_dir_btn.setCursor(Qt.PointingHandCursor)
+        self.open_dir_btn.clicked.connect(self._on_open_aws_dir)
+        header_layout.addWidget(self.open_dir_btn)
+
         header_layout.addStretch()
 
         self.reload_btn = QPushButton("↻ 重新加载")
@@ -116,6 +124,12 @@ class MfaWidget(QWidget):
         self._controller.mfa_result.connect(self._on_mfa_result)
         self.reload_btn.clicked.connect(self._controller.load_profiles)
         self.toggle_btn.clicked.connect(self._controller.toggle_starred_filter)
+
+    @staticmethod
+    def _on_open_aws_dir():
+        """在系统文件管理器中打开 ~/.aws/ 目录"""
+        aws_dir = Path.home() / ".aws"
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(aws_dir)))
 
     # ── 渲染 ─────────────────────────────────────────────
 

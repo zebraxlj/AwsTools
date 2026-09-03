@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (QApplication, QHBoxLayout, QMainWindow,
 
 from UI.mfa.mfa_widget import MfaWidget
 from UI.cloudwatch.cloudwatch_widget import CloudWatchWidget
+from CloudWatch.cloud_watch_alarm_ui import CloudWatchAlarmWidget
 
 
 def _load_qss() -> str:
@@ -65,7 +66,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("AWS Tools")
         self.setMinimumSize(660, 550)
-        self.resize(1200, 768)
+        self.resize(1366, 768)
 
         # ── 中心布局：左侧导航 | 右侧内容 ──
         central = QWidget()
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
         # ── 注册功能页面 ──
         self.add_page("MFA 管理", MfaWidget())
         self.add_page("CloudWatch", CloudWatchWidget())
+        self.add_page("CW Alarms", CloudWatchAlarmWidget())
 
         # 默认选中第一个
         if self._nav_buttons:

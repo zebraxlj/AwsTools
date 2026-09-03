@@ -73,6 +73,14 @@ def get_s3_bucket_url(region: str, bucket_name: str) -> str:
         return f'https://{region}.console.aws.amazon.com/s3/buckets/{bucket_name}?region={region}'
 
 
+def get_cloud_watch_alarm_url(region: str, alarm_name: str) -> str:
+    """获取 CloudWatch Alarm 详情页 URL。"""
+    alarm_name_enc = parse.quote(alarm_name, safe='')
+    if region.startswith('cn'):
+        return f'https://{region}.console.amazonaws.cn/cloudwatch/home?region={region}#alarmsV2:alarm/{alarm_name_enc}'
+    return f'https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#alarmsV2:alarm/{alarm_name_enc}'
+
+
 def get_cloud_watch_log_group_url(region: str, log_group_name: str) -> str:
     """
     获取 CloudWatch 日志组的 URL

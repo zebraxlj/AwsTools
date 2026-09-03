@@ -420,7 +420,9 @@ QLabel#cwHeaderTitle {
 /* ── 下拉菜单（Filled style） ─────────────────────────── */
 
 QComboBox#cwAccountCombo,
-QComboBox#cwRegionCombo {
+QComboBox#cwRegionCombo,
+QComboBox#cwStateFilterCombo,
+QComboBox#cwTargetStateCombo {
     border: none;
     border-bottom: 2px solid #c4c0c0;
     border-radius: 4px 4px 0 0;        /* 上圆角、下直角 — Filled 特征 */
@@ -432,18 +434,24 @@ QComboBox#cwRegionCombo {
 }
 
 QComboBox#cwAccountCombo:hover,
-QComboBox#cwRegionCombo:hover {
+QComboBox#cwRegionCombo:hover,
+QComboBox#cwStateFilterCombo:hover,
+QComboBox#cwTargetStateCombo:hover {
     background-color: #ebe6e6;
     border-bottom-color: #1c1b1f;
 }
 
 QComboBox#cwAccountCombo:focus,
-QComboBox#cwRegionCombo:focus {
+QComboBox#cwRegionCombo:focus,
+QComboBox#cwStateFilterCombo:focus,
+QComboBox#cwTargetStateCombo:focus {
     border-bottom: 2px solid #e8371b;
 }
 
 QComboBox#cwAccountCombo::drop-down,
-QComboBox#cwRegionCombo::drop-down {
+QComboBox#cwRegionCombo::drop-down,
+QComboBox#cwStateFilterCombo::drop-down,
+QComboBox#cwTargetStateCombo::drop-down {
     subcontrol-position: center right;
     subcontrol-origin: padding;
     width: 28px;
@@ -451,7 +459,9 @@ QComboBox#cwRegionCombo::drop-down {
 }
 
 QComboBox#cwAccountCombo::down-arrow,
-QComboBox#cwRegionCombo::down-arrow {
+QComboBox#cwRegionCombo::down-arrow,
+QComboBox#cwStateFilterCombo::down-arrow,
+QComboBox#cwTargetStateCombo::down-arrow {
     image: none;
     width: 0; height: 0;
     border-left: 5px solid transparent;
@@ -460,7 +470,9 @@ QComboBox#cwRegionCombo::down-arrow {
 }
 
 QComboBox#cwAccountCombo QAbstractItemView,
-QComboBox#cwRegionCombo QAbstractItemView {
+QComboBox#cwRegionCombo QAbstractItemView,
+QComboBox#cwStateFilterCombo QAbstractItemView,
+QComboBox#cwTargetStateCombo QAbstractItemView {
     border: 1px solid #c4c0c0;
     border-radius: 4px;
     background-color: #ffffff;
@@ -471,9 +483,10 @@ QComboBox#cwRegionCombo QAbstractItemView {
 }
 
 
-/* ── 刷新按钮（Filled Tonal） ─────────────────────────── */
+/* ── 刷新按钮 / 设置状态按钮（Filled Tonal） ─────────── */
 
-QPushButton#cwRefreshBtn {
+QPushButton#cwRefreshBtn,
+QPushButton#cwSetStateBtn {
     background-color: #e8371b;
     color: #ffffff;
     border: none;
@@ -482,17 +495,21 @@ QPushButton#cwRefreshBtn {
     font-size: 14px;
     font-weight: bold;
 }
-QPushButton#cwRefreshBtn:hover   { background-color: #c62e14; }
-QPushButton#cwRefreshBtn:pressed { background-color: #a82610; }
-QPushButton#cwRefreshBtn:disabled {
+QPushButton#cwRefreshBtn:hover,
+QPushButton#cwSetStateBtn:hover     { background-color: #c62e14; }
+QPushButton#cwRefreshBtn:pressed,
+QPushButton#cwSetStateBtn:pressed   { background-color: #a82610; }
+QPushButton#cwRefreshBtn:disabled,
+QPushButton#cwSetStateBtn:disabled  {
     background-color: rgba(28,27,31,0.12);
     color: rgba(28,27,31,0.38);
 }
 
 
-/* ── 搜索框（Outlined Text Field） ────────────────────── */
+/* ── 搜索框 / StateReason 输入框（Outlined Text Field） ── */
 
-QLineEdit#cwSearchEdit {
+QLineEdit#cwSearchEdit,
+QLineEdit#cwReasonEdit {
     border: 1px solid #c4c0c0;
     border-radius: 8px;
     padding: 8px 12px;
@@ -500,7 +517,8 @@ QLineEdit#cwSearchEdit {
     background-color: #ffffff;
     color: #1c1b1f;
 }
-QLineEdit#cwSearchEdit:focus {
+QLineEdit#cwSearchEdit:focus,
+QLineEdit#cwReasonEdit:focus {
     border: 2px solid #e8371b;
     padding: 7px 11px;
 }
@@ -587,6 +605,22 @@ QLabel#cwStatusLabel[error="true"] {
     color: #c62e14;
     font-weight: bold;
 }
+
+
+/* ── 说明对话框关闭按钮（Outlined Text Button） ─────── */
+
+QPushButton#cwDialogCloseBtn {
+    background-color: rgba(28,27,31,0.06);
+    color: #1c1b1f;
+    border: 1px solid transparent;   /* 占位：让 QSS painter 接管以生效 border-radius */
+    border-radius: 20px;
+    padding: 8px 20px;
+    font-size: 14px;
+    font-weight: bold;
+    min-width: 64px;
+}
+QPushButton#cwDialogCloseBtn:hover   { background-color: rgba(28,27,31,0.12); }
+QPushButton#cwDialogCloseBtn:pressed { background-color: rgba(28,27,31,0.16); }
 
 
 /* ── 打开缓存目录按钮（Text Button） ─────────────────── */

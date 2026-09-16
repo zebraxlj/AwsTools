@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import unicodedata
@@ -9,6 +10,16 @@ from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
 
 from utils.ColorHelper.color_xterm_256 import ColorXTerm256
 from utils.TablePrinter.table_printer_consts import BoxDrawingChar
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(name)s.%(funcName)s: %(message)s'
+    ))
+    logger.addHandler(_handler)
 
 
 class ColumnAlignment(str, Enum):
@@ -151,8 +162,7 @@ class BaseRow:
             href_attr_to_remove = [
                 attr for attr in cls._COL_ATTR_NAMES
                 if (
-                    can_display_href()
-                    and (cls._is_col_href_attr(attr) or cls._is_col_url_attr(attr))
+                    (cls._is_col_href_attr(attr) or cls._is_col_url_attr(attr))
                     and cls._is_col_href_attr_with_base_col(attr)
                 )
             ]
@@ -191,9 +201,7 @@ class BaseRow:
         Returns:
             bool: True if attribute is not config
         """
-        return (
-            not cls._is_config(attr_name)
-        )
+        return not cls._is_config(attr_name)
 
     @classmethod
     def _is_config(cls, attr_name: str) -> bool:
@@ -227,7 +235,7 @@ class BaseRow:
 
     @classmethod
     def _is_col_href_attr_with_base_col(cls, attr_name: str) -> bool:
-        """ check if the given name is an href field
+        """ check if the given name is a href field
         Args:
             attr_name (str): an attribute name
         Returns:
@@ -319,7 +327,7 @@ class BaseRow:
                 if col_config.format:
                     ret[attr_name] = attr_val.strftime(col_config.format)
                     continue
-            ret[attr_name] = str(getattr(self, attr_name))
+            ret[attr_name] = str(attr_val)
         return ret
 
     def get_col_value_true(self) -> Dict[str, str]:
@@ -341,10 +349,7 @@ class BaseRow:
                 if href is None:
                     continue
                 attr_value_original = ret[attr_name]
-                if sys.platform == 'win32':
-                    ret[attr_name] = f"\x1b]8;;{href}\x1b\\{attr_value_original}\x1b]8;;\x1b\\"
-                elif sys.platform == 'linux':
-                    ret[attr_name] = f"\033]8;;{href}\033\\{attr_value_original}\033]8;;\033\\"
+                ret[attr_name] = f"\x1b]8;;{href}\x1b\\{attr_value_original}\x1b]8;;\x1b\\"
         return ret
 
     def get_col_value_disp_len(self) -> Dict[str, int]:
@@ -352,7 +357,7 @@ class BaseRow:
         Returns:
             Dict[str, int]: key: column_attribute_name: value: column display length when cast to string type
         """
-        # print(f'{BaseRow.__name__}.{self.get_col_value_width.__name__}', self.__annotations__)
+        logger.debug(f'annotations:{self.__annotations__}')
         ret = dict()
         col_value_disp: dict = self.get_col_value_disp()
         for attr_name in self.get_col_attr_names():
@@ -421,6 +426,7 @@ class BaseTable(Generic[TBaseRow]):
     CHAR_ROW_SEP: str = BoxDrawingChar.LIGHT_HORIZONTAL
     CHAR_HEADER_H_SEP: str = BoxDrawingChar.DOUBLE_HORIZONTAL
     CHAR_HEADER_V_SEP: str = BoxDrawingChar.VERTICAL_SINGLE_AND_HORIZONTAL_DOUBLE
+    ENABLE_COLOR: bool = True
 
     def __init__(self, *args, **kwargs):
         self.__COL_MAX_DISP_LEN: defaultdict = defaultdict(int)
@@ -439,7 +445,7 @@ class BaseTable(Generic[TBaseRow]):
         for d in self.row_list:
             for col, width in d.get_col_value_disp_len().items():
                 col_max_disp_len[col] = max(col_max_disp_len[col], width)
-        # print(f'{self.__class__.__name__}.{self.get_col_max_width.__name__} col_max_width:{col_max_width}')
+        logger.debug(f'col_max_disp_len:{col_max_disp_len}')
         return col_max_disp_len
 
     def _update_col_max_disp_len(self, row_data: TBaseRow) -> None:
@@ -492,31 +498,28 @@ class BaseTable(Generic[TBaseRow]):
         ret = self.row_list
 
         # sort data
-        if order_by:
-            is_all_asc: bool = all(ascending)
-            is_all_desc: bool = all(not asc for asc in ascending)
-            if is_all_asc or is_all_desc:
-                # sorting order is all ascending or decending
+        is_all_asc: bool = all(ascending)
+        is_all_desc: bool = all(not asc for asc in ascending)
+        if is_all_asc or is_all_desc:
+            # sorting order is all ascending or descending
+            ret = sorted(
+                ret,
+                key=lambda row_data: [getattr(row_data, attr_name) for attr_name in order_by],
+                reverse=True if is_all_desc else False,
+            )
+        else:
+            # according to https://docs.python.org/3/howto/sorting.html, sort is stable.
+            # When multiple records have the same key, their original order is preserved.
+            for attr_name, asc in zip(order_by[::-1], ascending[::-1]):
                 ret = sorted(
-                    ret,
-                    key=lambda row_data: [getattr(row_data, attr_name) for attr_name in order_by],
-                    reverse=True if is_all_desc else False,
+                    ret, key=lambda row_data, _a=attr_name: getattr(row_data, _a), reverse=not asc
                 )
-            else:
-                # according to https://docs.python.org/3/howto/sorting.html, sort is stable.
-                # When multiple records have the same key, their original order is preserved.
-                for attr_name, asc in zip(order_by[::-1], ascending[::-1]):
-                    ret = sorted(
-                        ret, key=lambda row_data: getattr(row_data, attr_name), reverse=not asc
-                    )
-        elif ascending:
-            raise ValueError('ascending should not be passed without order_by')
 
         return ret
 
     def get_table_header_str(self) -> str:
         """ generate the header line for the output table """
-        # print(f'{self.__class__.__name__}.{self.get_table_header_str.__name__} row_type:{self.row_type}')
+        logger.debug(f'row_type:{self.row_type}')
         col_order = self.row_type.get_col_attr_names()
         col_align = [self.row_type.get_config(attr).align for attr in col_order]
         col_data = [self.row_type.get_col_header_map()[attr] for attr in col_order]
@@ -573,13 +576,15 @@ class BaseTable(Generic[TBaseRow]):
         col_data_true = row_data.get_col_value_true()
         col_disp_len = {attr: self.__COL_MAX_DISP_LEN[attr] for attr in col_order}
 
+        can_disp_color = self.ENABLE_COLOR and can_display_ansi_color()
         token_dict = {}
         for attr_name in col_order:
             text_disp, text_print = col_data_disp[attr_name], col_data_true[attr_name]
             config: ColumnConfig = col_config[attr_name]
             width = col_disp_len[attr_name]
             need_conf_fmt = (
-                config.conditional_format is not None
+                can_disp_color
+                and config.conditional_format is not None
                 and config.conditional_format != COND_FMT_DEFAULT
                 and config.conditional_format.is_condition_match(text_disp)
             )
@@ -609,7 +614,7 @@ class BaseTable(Generic[TBaseRow]):
             order_by (List[str], optional): see order_by in get_sorted_rows
             ascending (List[bool], optional): see ascending in get_sorted_rows
         """
-        # print(f'{self.__class__.__name__}.{self.to_table_str.__name__} data_len:{len(self.row_list)}')
+        logger.debug(f'data_len:{len(self.row_list)}')
         output_lines: List[str] = [self.get_table_header_str(), self.get_table_header_sep_str()]
 
         data_to_show = self.row_list if not order_by else self.get_sorted_rows(order_by, ascending)
@@ -619,6 +624,71 @@ class BaseTable(Generic[TBaseRow]):
 
         output_str = self.CHAR_LN.join(output_lines)
         print(output_str, '\n', sep='')
+
+
+_ansi_color_supported: Optional[bool] = None
+
+
+def can_display_ansi_color() -> bool:
+    """ 检查当前终端是否支持 ANSI 颜色转义序列。
+
+    Windows 上通过 ctypes 检测 ENABLE_VIRTUAL_TERMINAL_PROCESSING 标志，
+    若未启用则尝试主动启用。检测结果会被缓存，仅在首次调用时执行。
+
+    Returns:
+        bool: True if ANSI color is supported
+    """
+    global _ansi_color_supported
+    if _ansi_color_supported is not None:
+        return _ansi_color_supported
+
+    if sys.platform == 'win32':
+        _ansi_color_supported = _win32_enable_vt_processing()
+    elif sys.platform in ('linux', 'darwin'):
+        _ansi_color_supported = True
+    else:
+        raise NotImplementedError("Unsupported platform")
+
+    return _ansi_color_supported
+
+
+def _win32_enable_vt_processing() -> bool:
+    """ 检测并尝试启用 Windows console 的虚拟终端处理。
+
+    通过 GetConsoleMode 检查 ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004) 标志，
+    若未启用则尝试用 SetConsoleMode 主动开启。
+
+    Returns:
+        bool: True if VT processing is enabled (or successfully enabled)
+    """
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # STD_OUTPUT_HANDLE = -11
+        handle = kernel32.GetStdHandle(-11)
+        if handle == -1:
+            return False
+
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            # GetConsoleMode 失败，可能 stdout 被重定向到文件/管道
+            return False
+
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        if mode.value & ENABLE_VIRTUAL_TERMINAL_PROCESSING:
+            # 已启用
+            return True
+
+        # 尝试启用
+        new_mode = mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        if kernel32.SetConsoleMode(handle, new_mode):
+            logger.debug('已通过 SetConsoleMode 启用 ENABLE_VIRTUAL_TERMINAL_PROCESSING')
+            return True
+
+        # 启用失败
+        return False
+    except Exception:
+        return False
 
 
 def can_display_href() -> bool:

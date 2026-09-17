@@ -311,7 +311,7 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
 
             # 准备输出数据：数据行、数据分割行
             row_prev: Optional[EnvFleetStatusRow] = None
-            for row in rows_sorted:
+            for row_index, row in enumerate(rows_sorted):
                 # If you don't know what you are doing, it's recommended to add the separator regarding to the sorting order. # noqa
                 # Otherwise, you may see same column value being separated into different chunks and the output looks weird. # noqa
                 row: EnvFleetStatusRow
@@ -324,7 +324,7 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
                     lines.append(table.get_table_line_sep_str(
                         sep_h=BoxDrawingChar.LIGHT_HORIZONTAL, sep_v=BoxDrawingChar.LIGHT_VERTICAL, dense=False
                     ))
-                lines.append(table.get_table_line_str(row))
+                lines.append(table.get_table_line_str(row, row_index=row_index))
                 row_prev = row
 
             # 输出表单

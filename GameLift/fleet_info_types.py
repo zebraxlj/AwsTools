@@ -5,6 +5,7 @@ from typing import ClassVar, List, Optional
 from dataclasses_json import DataClassJsonMixin, dataclass_json
 
 from GameLift.fleet_info_consts import DT_FMT_S
+from utils.ColorHelper.color_xterm_256 import ColorXTerm256
 from utils.TablePrinter.table_printer import BaseRow, BaseTable, ColumnConfig, CondFmtContain, CondFmtExactMatch
 
 
@@ -111,3 +112,5 @@ class EnvFleetStatusRow(BaseRow):
 
 class EnvFleetStatusTbl(BaseTable):
     row_type = EnvFleetStatusRow
+    ENABLE_ROW_BACKGROUND = True
+    ROW_BACKGROUND_COLORS = (ColorXTerm256.GRAY_238, None)

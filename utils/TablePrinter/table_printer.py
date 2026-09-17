@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
+from typing import Any, Dict, Generic, List, Optional, Tuple, Type, TypeVar
 
 from utils.ColorHelper.color_xterm_256 import ColorXTerm256
 from utils.TablePrinter.table_printer_consts import BoxDrawingChar
@@ -33,8 +33,8 @@ class ColumnAlignment(str, Enum):
 
 @dataclass
 class FontFormat:
-    BgColor: ColorXTerm256 = ColorXTerm256.WHITE
-    FgColor: ColorXTerm256 = ColorXTerm256.BLACK
+    BgColor: Optional[ColorXTerm256] = ColorXTerm256.WHITE
+    FgColor: Optional[ColorXTerm256] = ColorXTerm256.BLACK
 
     def apply_format(self, text: str) -> str:
         codes = []
@@ -427,6 +427,12 @@ class BaseTable(Generic[TBaseRow]):
     CHAR_HEADER_H_SEP: str = BoxDrawingChar.DOUBLE_HORIZONTAL
     CHAR_HEADER_V_SEP: str = BoxDrawingChar.VERTICAL_SINGLE_AND_HORIZONTAL_DOUBLE
     ENABLE_COLOR: bool = True
+    # Enable alternating row backgrounds by setting this to True in a table subclass.
+    # The default keeps existing table output unchanged.
+    ENABLE_ROW_BACKGROUND: bool = False
+    ROW_BACKGROUND_COLORS: Tuple[Optional[ColorXTerm256], Optional[ColorXTerm256]] = (
+        ColorXTerm256.GRAY_236, ColorXTerm256.GRAY_238,
+    )
 
     def __init__(self, *args, **kwargs):
         self.__COL_MAX_DISP_LEN: defaultdict = defaultdict(int)
@@ -568,8 +574,14 @@ class BaseTable(Generic[TBaseRow]):
         )
         return ret
 
-    def get_table_line_str(self, row_data: TBaseRow) -> str:
-        """ generate a row line of the given row_data for the output table """
+    def get_table_line_str(self, row_data: TBaseRow, row_index: int = 0) -> str:
+        """Generate one data row, optionally using its alternating background color.
+
+        Args:
+            row_data: The row to render.
+            row_index: Zero-based index in the displayed result set. It selects one of
+                ``ROW_BACKGROUND_COLORS`` when ``ENABLE_ROW_BACKGROUND`` is enabled.
+        """
         col_order = self.row_type.get_col_attr_names()
         col_config = {attr: self.row_type.get_config(attr) for attr in col_order}
         col_data_disp = row_data.get_col_value_disp()
@@ -577,6 +589,7 @@ class BaseTable(Generic[TBaseRow]):
         col_disp_len = {attr: self.__COL_MAX_DISP_LEN[attr] for attr in col_order}
 
         can_disp_color = self.ENABLE_COLOR and can_display_ansi_color()
+        row_background_color = self._get_row_background_color(row_index, can_disp_color)
         token_dict = {}
         for attr_name in col_order:
             text_disp, text_print = col_data_disp[attr_name], col_data_true[attr_name]
@@ -597,9 +610,22 @@ class BaseTable(Generic[TBaseRow]):
 
             if need_conf_fmt:
                 text_disp = config.conditional_format.apply_format(text_disp)
+            elif row_background_color is not None:
+                # Conditional formatting takes precedence so alert colors stay visible.
+                text_disp = FontFormat(BgColor=row_background_color, FgColor=None).apply_format(text_disp)
             token_dict[attr_name] = text_disp
         tokens = [token_dict[attr_name] for attr_name in col_order]
         return self.CHAR_COL_SEP.join(tokens)
+
+    def _get_row_background_color(
+            self, row_index: int, can_disp_color: bool
+            ) -> Optional[ColorXTerm256]:
+        """Return the configured alternating background color for a displayed row."""
+        if not self.ENABLE_ROW_BACKGROUND or not can_disp_color:
+            return None
+        if row_index < 0:
+            raise ValueError('row_index must be zero or greater')
+        return self.ROW_BACKGROUND_COLORS[row_index % len(self.ROW_BACKGROUND_COLORS)]
 
     def insert_row(self, row_data: TBaseRow):
         """ insert a row_data in to the row_list """
@@ -619,8 +645,8 @@ class BaseTable(Generic[TBaseRow]):
 
         data_to_show = self.row_list if not order_by else self.get_sorted_rows(order_by, ascending)
 
-        for row_data in data_to_show:
-            output_lines.append(self.get_table_line_str(row_data))
+        for row_index, row_data in enumerate(data_to_show):
+            output_lines.append(self.get_table_line_str(row_data, row_index=row_index))
 
         output_str = self.CHAR_LN.join(output_lines)
         print(output_str, '\n', sep='')

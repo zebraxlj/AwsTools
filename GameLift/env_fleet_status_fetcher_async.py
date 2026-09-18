@@ -22,7 +22,7 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 os.chdir('..')
 sys.path.append(os.getcwd())
 
-from GameLift.fleet_info_consts import DT_FMT_M, STATUS_ACTIVE, STATUS_ACTIVE_EMOJI  # noqa: E402
+from GameLift.fleet_info_consts import STATUS_ACTIVE, STATUS_ACTIVE_EMOJI, fmt_dt_display  # noqa: E402
 from GameLift.fleet_info_types import (  # noqa: E402
     EnvFleetStatusRow, EnvFleetStatusTbl,
     FleetAttribute, FleetCapacity, FleetLocationAttribute, FleetLocationCapacity
@@ -352,7 +352,7 @@ def process_get_fleet_location_status(env, sub_env, region: str, shared_output: 
                         FleetType=env_fleets_info_dict[fleet_id].FleetType,
                         Name=env_fleets_info_dict[fleet_id].Name,
                         Name_href=get_fleet_address(region, fleet_id),
-                        CreateTime=env_fleets_info_dict[fleet_id].CreationTime.strftime(DT_FMT_M)[:-2],
+                        CreateTime=fmt_dt_display(env_fleets_info_dict[fleet_id].CreationTime),
                         Status=env_fleets_info_dict[fleet_id].Status,
                         InstanceType=fleet_location_capacity.InstanceType,
                         Desired=fleet_location_capacity.InstanceCounts.get('DESIRED', -1),
@@ -384,7 +384,7 @@ def process_get_fleet_location_status(env, sub_env, region: str, shared_output: 
                         FleetType=fleet_attr.FleetType,
                         Name=fleet_attr.Name,
                         Name_href=get_fleet_address(region, fleet_id),
-                        CreateTime=fleet_attr.CreationTime.strftime(DT_FMT_M)[:-2],
+                        CreateTime=fmt_dt_display(fleet_attr.CreationTime),
                         Status=fleet_attr.Status,
                         InstanceType=fleet_capacity.InstanceType,
                         Desired=fleet_capacity.InstanceCounts.get('DESIRED', -1),

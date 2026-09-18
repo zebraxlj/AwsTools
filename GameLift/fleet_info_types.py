@@ -61,13 +61,13 @@ class EnvFleetStatusRow(BaseRow):
     __Region_config: ClassVar[ColumnConfig] = ColumnConfig(alias='地区')
     Name: str = field(default_factory=lambda: '无战斗服')
     __Name_config: ClassVar[ColumnConfig] = ColumnConfig(
-        alias='Fleet名', conditional_format=CondFmtContain(contain_target='AWS MFA Expired')
+        alias='机群名', conditional_format=CondFmtContain(contain_target='AWS MFA Expired')
     )
     CreateTime: str = 'NA'
-    __CreateTime_config: ClassVar[ColumnConfig] = ColumnConfig(alias='Fleet创建时间')
+    __CreateTime_config: ClassVar[ColumnConfig] = ColumnConfig(alias='机群创建时间(+08)')
     Status: str = 'NA'
     __Status_config: ClassVar[ColumnConfig] = ColumnConfig(
-        alias='Fleet状态', conditional_format=CondFmtExactMatch(match_target='ERROR')
+        alias='机群状态', conditional_format=CondFmtExactMatch(match_target='ERROR')
     )
     FleetType: str = 'NA'
     __FleetType_config: ClassVar[ColumnConfig] = ColumnConfig(alias='机群类型')

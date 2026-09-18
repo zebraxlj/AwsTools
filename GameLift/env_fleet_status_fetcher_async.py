@@ -22,7 +22,7 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 os.chdir('..')
 sys.path.append(os.getcwd())
 
-from GameLift.fleet_info_consts import DT_FMT_M  # noqa: E402
+from GameLift.fleet_info_consts import DT_FMT_M, STATUS_ACTIVE, STATUS_ACTIVE_EMOJI  # noqa: E402
 from GameLift.fleet_info_types import (  # noqa: E402
     EnvFleetStatusRow, EnvFleetStatusTbl,
     FleetAttribute, FleetCapacity, FleetLocationAttribute, FleetLocationCapacity
@@ -449,6 +449,10 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
                 display_row = copy.copy(row)
                 if enable_flag:
                     display_row.Region = AllRegions.to_flag(row.Region)
+                if row.Status == STATUS_ACTIVE:
+                    display_row.Status = STATUS_ACTIVE_EMOJI
+                if row.LocationStatus == STATUS_ACTIVE:
+                    display_row.LocationStatus = STATUS_ACTIVE_EMOJI
                 lines.append(table.get_table_line_str(display_row, row_index=display_line_index))
                 display_line_index += 1
                 row_prev = row

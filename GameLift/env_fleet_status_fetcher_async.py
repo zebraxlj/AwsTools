@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import copy
 import functools
 import multiprocessing
 import os
@@ -28,7 +29,7 @@ from GameLift.fleet_info_types import (  # noqa: E402
 )
 from utils.aws_client_error_handler import handle_expired_token_exception, print_err  # noqa: E402
 from utils.aws_client_helper import get_aws_profile  # noqa: E402
-from utils.aws_consts import AllEnvs, Env, REGION_ABBR, REGION_TO_ABBR  # noqa: E402
+from utils.aws_consts import AllEnvs, AllRegions, Env, REGION_ABBR, REGION_TO_ABBR  # noqa: E402
 from utils.aws_urls import get_fleet_address  # noqa: E402
 from utils.TablePrinter.table_printer_consts import BoxDrawingChar  # noqa: E402
 
@@ -407,7 +408,7 @@ def __mask_fleet_id(fleet_id: str) -> str:
 
 
 @keyboard_interrupt_handler
-def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop_event: Event):
+def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop_event: Event, enable_flag: bool):
     last_update_dt: datetime = datetime(2024, 1, 1)
     while not stop_event.is_set():
         if any(v.LastCheckedDt > last_update_dt for v in shared_output.values() if v.LastCheckedDt is not None):
@@ -431,7 +432,8 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
 
             # 准备输出数据：数据行、数据分割行
             row_prev: Optional[EnvFleetStatusRow] = None
-            for row_index, row in enumerate(rows_sorted):
+            display_line_index = 0
+            for row in rows_sorted:
                 # If you don't know what you are doing, it's recommended to add the separator regarding to the sorting order. # noqa
                 # Otherwise, you may see same column value being separated into different chunks and the output looks weird. # noqa
                 row: EnvFleetStatusRow
@@ -444,7 +446,11 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
                     lines.append(table.get_table_line_sep_str(
                         sep_h=BoxDrawingChar.LIGHT_HORIZONTAL, sep_v=BoxDrawingChar.LIGHT_VERTICAL, dense=False
                     ))
-                lines.append(table.get_table_line_str(row, row_index=row_index))
+                display_row = copy.copy(row)
+                if enable_flag:
+                    display_row.Region = AllRegions.to_flag(row.Region)
+                lines.append(table.get_table_line_str(display_row, row_index=display_line_index))
+                display_line_index += 1
                 row_prev = row
 
             # 输出表单
@@ -463,7 +469,7 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
         time.sleep(3)
 
 
-def fetch_fleet_status():
+def fetch_fleet_status(enable_flag: bool = False):
     stop_event: Event = multiprocessing.Event()
 
     with multiprocessing.Manager() as manager:
@@ -477,7 +483,7 @@ def fetch_fleet_status():
             process.start()
 
         process_print = multiprocessing.Process(
-            target=process_print_fleet_status, args=(shared_dict, stop_event,))
+            target=process_print_fleet_status, args=(shared_dict, stop_event, enable_flag,))
         process_print.start()
 
         try:
@@ -521,6 +527,17 @@ def parse_args(args: List[str]):
                         help='脚本执行时长，单位：分钟',
                         default=None,
                         )
+    parser.add_argument('--flag', '-f',
+                        help=(
+                            '地区列显示国旗 emoji 而非缩写。'
+                            'Windows 自带的 Segoe UI Emoji 不含国旗字形，需另装含国旗的彩色字体并加到终端字体回退链，'
+                            '如 Windows Terminal 的 font.face 写成 "<主字体>, Twemoji Mozilla"，装完要完全重启终端。'
+                            '推荐 Twemoji Mozilla (github.com/mozilla/twemoji-colr)，它是 COLRv0，Win10/Win11 都能渲染；'
+                            'Noto Color Emoji 这类纯 COLRv1 字体只有 Win11 能用，Win10 的 DirectWrite 不认，装了也不显示。'
+                            'WSL 下字形由 Windows Terminal 渲染，字体要装在 Windows 侧'
+                        ),
+                        action='store_true',
+                        default=False)
     return parser.parse_args(args)
 
 
@@ -532,6 +549,7 @@ def main():
     arg_sub_env = args.sub_environment_name
     arg_regions: list[str] = args.regions if args.regions else []
     arg_duration: Optional[int] = int(args.duration) if args.duration else None
+    arg_enable_flag: bool = args.flag
 
     global ENV, SUB_ENV, REGIONS, POLLING_DURATION
 
@@ -556,7 +574,7 @@ def main():
     REGIONS = arg_regions if arg_regions else REGIONS
     POLLING_DURATION = POLLING_DURATION if arg_duration is None else arg_duration
 
-    fetch_fleet_status()
+    fetch_fleet_status(enable_flag=arg_enable_flag)
 
 
 if __name__ == '__main__':

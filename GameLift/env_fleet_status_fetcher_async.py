@@ -31,7 +31,6 @@ from utils.aws_client_error_handler import handle_expired_token_exception, print
 from utils.aws_client_helper import get_aws_profile  # noqa: E402
 from utils.aws_consts import AllEnvs, AllRegions, Env, REGION_ABBR, REGION_TO_ABBR  # noqa: E402
 from utils.aws_urls import get_fleet_address  # noqa: E402
-from utils.TablePrinter.table_printer_consts import BoxDrawingChar  # noqa: E402
 
 # region 配置项
 # ENV, SUB_ENV = AllEnvs.NemoTestComedy, ''
@@ -421,7 +420,7 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
                 last_update_dt = max(last_update_dt, v.LastCheckedDt) if v.LastCheckedDt is not None else last_update_dt
 
             # 准备输出数据：表头行、表头分割行
-            lines = [table.get_table_header_str(), table.get_table_header_sep_str()]
+            lines = [table.get_table_header_str()]
             # 准备输出数据：表行排序
             rows_sorted: List[EnvFleetStatusRow] = table.get_sorted_rows(
                 order_by=['SubEnv', 'Region', 'Name', 'InstanceType', 'Status', 'InstanceLocation'],
@@ -437,15 +436,11 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
                 # If you don't know what you are doing, it's recommended to add the separator regarding to the sorting order. # noqa
                 # Otherwise, you may see same column value being separated into different chunks and the output looks weird. # noqa
                 row: EnvFleetStatusRow
+                overline = False
                 if row_prev is not None and row_prev.Region != row.Region:
-                    lines.append(table.get_table_line_sep_str(
-                        sep_h=BoxDrawingChar.DOUBLE_HORIZONTAL,
-                        sep_v=BoxDrawingChar.VERTICAL_SINGLE_AND_HORIZONTAL_DOUBLE,
-                    ))
+                    lines.append(table.get_table_header_str())
                 elif row_prev is not None and row_prev.InstanceType != row.InstanceType:
-                    lines.append(table.get_table_line_sep_str(
-                        sep_h=BoxDrawingChar.LIGHT_HORIZONTAL, sep_v=BoxDrawingChar.LIGHT_VERTICAL, dense=False
-                    ))
+                    overline = True
                 display_row = copy.copy(row)
                 if enable_flag:
                     display_row.Region = AllRegions.to_flag(row.Region)
@@ -453,7 +448,7 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
                     display_row.Status = STATUS_ACTIVE_EMOJI
                 if row.LocationStatus == STATUS_ACTIVE:
                     display_row.LocationStatus = STATUS_ACTIVE_EMOJI
-                lines.append(table.get_table_line_str(display_row, row_index=display_line_index))
+                lines.append(table.get_table_line_str(display_row, row_index=display_line_index, overline=overline))
                 display_line_index += 1
                 row_prev = row
 

@@ -7,6 +7,7 @@ from dataclasses_json import DataClassJsonMixin, dataclass_json
 from GameLift.fleet_info_consts import DT_FMT_S
 from utils.ColorHelper.color_xterm_256 import ColorXTerm256
 from utils.TablePrinter.table_printer import BaseRow, BaseTable, ColumnConfig, CondFmtContain, CondFmtExactMatch
+from utils.TablePrinter.table_printer_consts import BoxDrawingChar
 
 
 @dataclass_json
@@ -112,5 +113,22 @@ class EnvFleetStatusRow(BaseRow):
 
 class EnvFleetStatusTbl(BaseTable):
     row_type = EnvFleetStatusRow
+
+    HEADER_BACKGROUND_COLOR = ColorXTerm256.GRAY_234
+    HEADER_FOREGROUND_COLOR = ColorXTerm256.WHITE
+    HEADER_BOLD = True
+
     ENABLE_ROW_BACKGROUND = True
-    ROW_BACKGROUND_COLORS = (ColorXTerm256.GRAY_238, None)
+    ROW_BACKGROUND_COLORS = (ColorXTerm256.GRAY_236, ColorXTerm256.GRAY_238)
+
+    CHAR_COL_SEP = ''
+
+    def get_table_line_sep_str_fleet(self) -> str:
+        # return super().get_table_line_sep_str(BoxDrawingChar.LIGHT_HORIZONTAL, BoxDrawingChar.LIGHT_HORIZONTAL)
+        return super().get_table_line_sep_str(BoxDrawingChar.LIGHT_HORIZONTAL, self.CHAR_COL_SEP)
+        # return super().get_table_line_sep_str(' ', ' ')
+
+    def get_table_line_sep_str_region(self):
+        return super().get_table_line_sep_str(
+            BoxDrawingChar.DOUBLE_HORIZONTAL, BoxDrawingChar.VERTICAL_SINGLE_AND_HORIZONTAL_DOUBLE
+        )

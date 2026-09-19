@@ -31,14 +31,18 @@ class FontFormat:
 
     def apply_format(self, text: str) -> str:
         codes = []
+        reset_codes = []
         if self.Bold:
             codes.append('1')
+            reset_codes.append('22')
         if isinstance(self.BgColor, ColorXTerm256):
             codes.append(f'48;5;{self.BgColor}')
+            reset_codes.append('49')
         if isinstance(self.FgColor, ColorXTerm256):
             codes.append(f'38;5;{self.FgColor}')
+            reset_codes.append('39')
         if codes:
-            return f'\033[{";".join(codes)}m{text}\033[0m'
+            return f'\033[{";".join(codes)}m{text}\033[{";".join(reset_codes)}m'
         return text
 
 
@@ -604,13 +608,16 @@ class BaseTable(Generic[TBaseRow]):
                 ret = FontFormat(BgColor=row_background_color, FgColor=None).apply_format(ret)
         return ret
 
-    def get_table_line_str(self, row_data: TBaseRow, row_index: int = 0) -> str:
-        """Generate one data row, optionally using its alternating background color.
+    def get_table_line_str(
+            self, row_data: TBaseRow, row_index: int = 0, overline: bool = False
+            ) -> str:
+        """Generate one data row, optionally using its alternating background color and overline.
 
         Args:
             row_data: The row to render.
             row_index: Zero-based index in the displayed result set. It selects one of
                 ``ROW_BACKGROUND_COLORS`` when ``ENABLE_ROW_BACKGROUND`` is enabled.
+            overline: Draw an overline across the complete row when ANSI output is available.
         """
         col_order = self.row_type.get_col_attr_names()
         col_config = {attr: self.row_type.get_config(attr) for attr in col_order}
@@ -652,7 +659,10 @@ class BaseTable(Generic[TBaseRow]):
         if row_background_color is not None:
             # Keep column dividers in the same band as their row.
             col_sep = FontFormat(BgColor=row_background_color, FgColor=None).apply_format(col_sep)
-        return col_sep.join(tokens)
+        ret = col_sep.join(tokens)
+        if overline and can_disp_color:
+            ret = f'\033[53m{ret}\033[55m'
+        return ret
 
     def _get_row_background_color(
             self, row_index: int, can_disp_color: bool

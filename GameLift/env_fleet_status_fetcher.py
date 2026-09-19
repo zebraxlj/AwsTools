@@ -1,4 +1,5 @@
 import argparse
+import copy
 import functools
 import multiprocessing
 import os
@@ -20,16 +21,15 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 os.chdir('..')
 sys.path.append(os.getcwd())
 
-from GameLift.fleet_info_consts import fmt_dt_display  # noqa: E402
+from GameLift.fleet_info_consts import STATUS_ACTIVE, STATUS_ACTIVE_EMOJI, fmt_dt_display  # noqa: E402
 from GameLift.fleet_info_types import (  # noqa: E402
     EnvFleetStatusRow, EnvFleetStatusTbl,
     FleetAttribute, FleetCapacity, FleetLocationAttribute, FleetLocationCapacity
 )
 from utils.aws_client_error_handler import handle_expired_token_exception, print_err  # noqa: E402
 from utils.aws_client_helper import get_aws_profile  # noqa: E402
-from utils.aws_consts import AllEnvs, REGION_ABBR, REGION_TO_ABBR  # noqa: E402
+from utils.aws_consts import AllEnvs, AllRegions, REGION_ABBR, REGION_TO_ABBR  # noqa: E402
 from utils.aws_urls import get_fleet_address  # noqa: E402
-from utils.TablePrinter.table_printer_consts import BoxDrawingChar  # noqa: E402
 
 # region 配置项
 # ENV, SUB_ENV = AllEnvs.NemoTestComedy, ''
@@ -75,7 +75,11 @@ def process_get_fleet_location_status(env, sub_env, region: str, shared_output: 
             try:
                 data = client.describe_fleet_attributes(**kwargs)
             except ClientError as e:
-                if 'security token included in the request is expired' in e.response['Error']['Message']:
+                err_msg = e.response['Error']['Message']
+                if (
+                    'security token included in the request is expired' in err_msg
+                    or 'security token included in the request is invalid' in err_msg
+                ):
                     handle_expired_token_exception(session)
                     is_token_expired = True
                 else:
@@ -105,10 +109,8 @@ def process_get_fleet_location_status(env, sub_env, region: str, shared_output: 
 
         output_key_na = f'{region}:NA:NA'
         if not env_fleets_info_dict:
-            kwargs = {}
             row_kwargs = {}
             if is_token_expired:
-                kwargs['Name'] = 'AWS MFA Expired'
                 row_kwargs['Name'] = 'AWS MFA Expired'
             shared_output[output_key_na] = EnvFleetStatusRow(SubEnv=int(sub_env), Region=region, **row_kwargs)
             time.sleep(REFRESH_INTERVAL)
@@ -116,6 +118,9 @@ def process_get_fleet_location_status(env, sub_env, region: str, shared_output: 
 
         if output_key_na in shared_output:
             shared_output.pop(output_key_na)
+
+        if stop_event.is_set():
+            break
 
         env_fleets_location_attributes_dict: Dict[str, List[FleetLocationAttribute]] = {}
         env_fleets_location_capacity_dict: Dict[str, List[FleetLocationCapacity]] = {}
@@ -287,7 +292,9 @@ def __mask_fleet_id(fleet_id: str) -> str:
 
 
 @keyboard_interrupt_handler
-def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop_event: Event):
+def process_print_fleet_status(
+        shared_output: Dict[str, EnvFleetStatusRow], stop_event: Event, enable_flag: bool
+):
     last_update_dt: datetime = datetime(2024, 1, 1)
     while not stop_event.is_set():
         if any(v.LastCheckedDt > last_update_dt for v in shared_output.values() if v.LastCheckedDt is not None):
@@ -300,7 +307,7 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
                 last_update_dt = max(last_update_dt, v.LastCheckedDt) if v.LastCheckedDt is not None else last_update_dt
 
             # 准备输出数据：表头行、表头分割行
-            lines = [table.get_table_header_str(), table.get_table_header_sep_str()]
+            lines = [table.get_table_header_str()]
             # 准备输出数据：表行排序
             rows_sorted: List[EnvFleetStatusRow] = table.get_sorted_rows(
                 order_by=['SubEnv', 'Region', 'Name', 'InstanceType', 'Status', 'InstanceLocation'],
@@ -311,20 +318,25 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
 
             # 准备输出数据：数据行、数据分割行
             row_prev: Optional[EnvFleetStatusRow] = None
-            for row_index, row in enumerate(rows_sorted):
+            display_line_index = 0
+            for row in rows_sorted:
                 # If you don't know what you are doing, it's recommended to add the separator regarding to the sorting order. # noqa
                 # Otherwise, you may see same column value being separated into different chunks and the output looks weird. # noqa
                 row: EnvFleetStatusRow
+                overline = False
                 if row_prev is not None and row_prev.Region != row.Region:
-                    lines.append(table.get_table_line_sep_str(
-                        sep_h=BoxDrawingChar.DOUBLE_HORIZONTAL,
-                        sep_v=BoxDrawingChar.VERTICAL_SINGLE_AND_HORIZONTAL_DOUBLE,
-                    ))
+                    lines.append(table.get_table_header_str())
                 elif row_prev is not None and row_prev.InstanceType != row.InstanceType:
-                    lines.append(table.get_table_line_sep_str(
-                        sep_h=BoxDrawingChar.LIGHT_HORIZONTAL, sep_v=BoxDrawingChar.LIGHT_VERTICAL, dense=False
-                    ))
-                lines.append(table.get_table_line_str(row, row_index=row_index))
+                    overline = True
+                display_row = copy.copy(row)
+                if enable_flag:
+                    display_row.Region = AllRegions.to_flag(row.Region)
+                if row.Status == STATUS_ACTIVE:
+                    display_row.Status = STATUS_ACTIVE_EMOJI
+                if row.LocationStatus == STATUS_ACTIVE:
+                    display_row.LocationStatus = STATUS_ACTIVE_EMOJI
+                lines.append(table.get_table_line_str(display_row, row_index=display_line_index, overline=overline))
+                display_line_index += 1
                 row_prev = row
 
             # 输出表单
@@ -343,7 +355,7 @@ def process_print_fleet_status(shared_output: Dict[str, EnvFleetStatusRow], stop
         time.sleep(3)
 
 
-def fetch_fleet_status():
+def fetch_fleet_status(enable_flag: bool = False):
     stop_event: Event = multiprocessing.Event()
 
     with multiprocessing.Manager() as manager:
@@ -357,7 +369,7 @@ def fetch_fleet_status():
             process.start()
 
         process_print = multiprocessing.Process(
-            target=process_print_fleet_status, args=(shared_dict, stop_event,))
+            target=process_print_fleet_status, args=(shared_dict, stop_event, enable_flag,))
         process_print.start()
 
         try:
@@ -401,6 +413,17 @@ def parse_args(args: List[str]):
                         help='脚本执行时长，单位：分钟',
                         default=None,
                         )
+    parser.add_argument('--flag', '-f',
+                        help=(
+                            '地区列显示国旗 emoji 而非缩写。'
+                            'Windows 自带的 Segoe UI Emoji 不含国旗字形，需另装含国旗的彩色字体并加到终端字体回退链，'
+                            '如 Windows Terminal 的 font.face 写成 "<主字体>, Twemoji Mozilla"，装完要完全重启终端。'
+                            '推荐 Twemoji Mozilla (github.com/mozilla/twemoji-colr)，它是 COLRv0，Win10/Win11 都能渲染；'
+                            'Noto Color Emoji 这类纯 COLRv1 字体只有 Win11 能用，Win10 的 DirectWrite 不认，装了也不显示。'
+                            'WSL 下字形由 Windows Terminal 渲染，字体要装在 Windows 侧'
+                        ),
+                        action='store_true',
+                        default=False)
     return parser.parse_args(args)
 
 
@@ -411,7 +434,8 @@ def main():
     arg_env_name = args.environment_name
     arg_sub_env = args.sub_environment_name
     arg_regions: list[str] = args.regions if args.regions else []
-    arg_duration: int = int(args.duration)
+    arg_duration: Optional[int] = int(args.duration) if args.duration else None
+    arg_enable_flag: bool = args.flag
 
     global ENV, SUB_ENV, REGIONS, POLLING_DURATION
 
@@ -436,7 +460,7 @@ def main():
     REGIONS = arg_regions if arg_regions else REGIONS
     POLLING_DURATION = POLLING_DURATION if arg_duration is None else arg_duration
 
-    fetch_fleet_status()
+    fetch_fleet_status(enable_flag=arg_enable_flag)
 
 
 if __name__ == '__main__':
